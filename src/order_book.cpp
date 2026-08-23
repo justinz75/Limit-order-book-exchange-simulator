@@ -117,8 +117,16 @@ std::vector<Trade> OrderBook::submit(Order order) {
     std::vector<Trade> trades;
     if (order.side == Side::Buy) {
         trades = match_buy(order);
+        //if buy order is not fully filled, add the remaining quantity to the bid book
+        if (order.remaining_quantity > 0) {
+            bids_[order.price].push_back(order);
+        }
     } else if (order.side == Side::Sell) {
         trades = match_sell(order);
+        //if sell order is not fully filled, add the remaining quantity to the ask book
+        if (order.remaining_quantity > 0) {
+            asks_[order.price].push_back(order);
+        }
     }
     return trades;
 }
