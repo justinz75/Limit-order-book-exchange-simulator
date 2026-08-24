@@ -56,7 +56,9 @@ std::vector<Trade> OrderBook::match_buy(Order& incoming) {
 
         //remove the resting order if fully filled
         if (resting_order.remaining_quantity == 0) {
+            auto resting_order_id = resting_order.id;
             best_ask_level.pop_front();
+            order_index_.erase(resting_order_id);
             if (best_ask_level.empty()) {
                 asks_.erase(best_ask_it);
             }
@@ -94,6 +96,7 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
             trade_quantity,
             incoming.timestamp
         };
+
         //the trade is added to the trades vector, which will be returned to the caller of the submit function.
         trades.push_back(trade);
 
@@ -103,7 +106,9 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
 
         //remove the resting order if fully filled
         if (resting_order.remaining_quantity == 0) {
+            auto resting_order_id = resting_order.id;
             best_bid_level.pop_front();
+            order_index_.erase(resting_order_id);
             if (best_bid_level.empty()) {
                 bids_.erase(best_bid_it);
             }
@@ -119,14 +124,64 @@ std::vector<Trade> OrderBook::submit(Order order) {
         trades = match_buy(order);
         //if buy order is not fully filled, add the remaining quantity to the bid book
         if (order.remaining_quantity > 0) {
-            bids_[order.price].push_back(order);
+            add_to_book(order);
         }
     } else if (order.side == Side::Sell) {
         trades = match_sell(order);
         //if sell order is not fully filled, add the remaining quantity to the ask book
         if (order.remaining_quantity > 0) {
-            asks_[order.price].push_back(order);
+            add_to_book(order);
         }
     }
     return trades;
+}
+
+//adds an order to the order book and updates the order index for quick lookup
+void OrderBook::add_to_book(const Order& order) {
+    //add the order to the appropriate book (bids or asks) based on its side
+    if (order.side == Side::Buy) {
+        auto& price_level = bids_[order.price];
+        price_level.push_back(order);
+        auto iterator = std::prev(price_level.end());
+        order_index_[order.id] = {
+            order.side,
+            order.price,
+            iterator
+        };
+    //if the order is a sell order, add it to the ask book
+    } else {
+        auto& price_level = asks_[order.price];
+        price_level.push_back(order);
+        auto iterator = std::prev(price_level.end());
+        order_index_[order.id] = {
+            order.side,
+            order.price,
+            iterator
+        };
+    }
+}
+
+bool OrderBook::cancel_order(OrderId order_id) {
+    auto index_it = order_index_.find(order_id);
+    if (index_it == order_index_.end()) {
+        return false;
+    }
+    OrderLocation location = index_it->second;
+    if (location.side == Side::Buy) {
+        auto& price_level = bids_.at(location.price);
+        price_level.erase(location.order_iterator);
+        if (price_level.empty()) {
+            bids_.erase(location.price);
+        }
+
+    } else {
+        auto& price_level = asks_.at(location.price);
+        price_level.erase(location.order_iterator);
+        if (price_level.empty()) {
+            asks_.erase(location.price);
+        }
+    }
+    order_index_.erase(index_it);
+
+    return true;
 }

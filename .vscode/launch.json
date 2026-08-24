@@ -1,0 +1,11 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Package: Monte_Carlo_Price_Simulator",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "Monte_Carlo_Price_Simulator"
+        }
+    ]
+}
