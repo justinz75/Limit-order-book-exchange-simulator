@@ -7,9 +7,10 @@
 //includes the order.hpp file to use the Order structure and related types
 #include "order.hpp"
 
-//list and map
+//list, map, and functional
 #include <list>
 #include <map>
+#include <functional>
 
  //defines PriceLevel as a list of Order objects
 using PriceLevel = std::list<Order>;

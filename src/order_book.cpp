@@ -76,8 +76,8 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
         Price best_bid_price = best_bid_it->first;
         PriceLevel& best_bid_level = best_bid_it->second;
 
-        //no more matching possible if the incoming sell order's price is greater than the best bid price
-        if (incoming.price < best_bid_price) {
+        //no more matching possible if the incoming sell order's price is less than the best bid price
+        if (incoming.price > best_bid_price) {
             break; 
         }
 
