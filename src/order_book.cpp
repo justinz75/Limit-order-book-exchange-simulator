@@ -2,7 +2,13 @@
 #include "order_book.hpp"
 #include "trade.hpp"
 
-//returns the best ask price in the order book, or std::nullopt if there are no asks
+std::optional<Price> OrderBook::best_bid() const {
+    if (bids_.empty()) {
+        return std::nullopt;
+    }
+    return std::prev(bids_.end())->first;
+}
+
 std::optional<Price> OrderBook::best_ask() const {
     if (asks_.empty()) {
         return std::nullopt;
@@ -10,12 +16,47 @@ std::optional<Price> OrderBook::best_ask() const {
     return asks_.begin()->first;
 }
 
-//returns the best bid price in the order book, or std::nullopt if there are no bids
-std::optional<Price> OrderBook::best_bid() const {
-    if (bids_.empty()) {
+std::optional<Price> OrderBook::spread() const {
+    auto bid = best_bid();
+    auto ask = best_ask();
+    if (!bid.has_value() || !ask.has_value()) {
         return std::nullopt;
     }
-    return bids_.begin()->first;
+    return ask.value() - bid.value();
+}
+
+std::optional<double> OrderBook::mid_price() const {
+    auto bid = best_bid();
+    auto ask = best_ask();
+    if (!bid.has_value() || !ask.has_value()) {
+        return std::nullopt;
+    }
+    return (static_cast<double>(bid.value()) +
+            static_cast<double>(ask.value())) / 2.0;
+}
+
+Quantity OrderBook::quantity_at_price(Side side, Price price) const {
+    Quantity total = 0;
+
+    if (side == Side::Buy) {
+        auto it = bids_.find(price);
+        if (it == bids_.end()) {
+            return 0;
+        }
+        for (const auto& order : it->second) {
+            total += order.remaining_quantity;
+        }
+    } else {
+        auto it = asks_.find(price);
+        if (it == asks_.end()) {
+            return 0;
+        }
+        for (const auto& order : it->second) {
+            total += order.remaining_quantity;
+        }
+    }
+
+    return total;
 }
 
 std::vector<Trade> OrderBook::match_buy(Order& incoming) {
