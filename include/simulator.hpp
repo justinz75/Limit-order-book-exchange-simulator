@@ -1,6 +1,7 @@
 #pragma once
 
 #include "order_book.hpp"
+#include "data_writer.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +29,7 @@ class Simulator {
     public:
     //constructor for the Simulator class, which initializes the random number generator with a given seed (default is 42).
         Simulator(std::uint64_t seed = 50);
-        SimulationStats run(std::size_t number_of_events);
+        SimulationStats run(std::size_t number_of_events, DataWriter& writer);
 
     private:
         OrderBook order_book_;
@@ -52,7 +53,7 @@ class Simulator {
         OrderId choose_order_to_cancel();
 
         //processes the submission of an order to the order book and updates the simulation statistics accordingly.
-        void process_order(const Order& order);
+        void process_order(const Order& order, std::size_t event_number, DataWriter& writer);
 
         //processes the cancellation of an order in the order book and updates the simulation statistics accordingly.
         void process_cancel();

@@ -10,25 +10,25 @@ Simulator::Simulator(std::uint64_t seed)
 }
 
 
-//runs the simulation for a specified number of events, generating random orders and processing them through the order book. It also collects statistics about the simulation.
+//runs the simulation for a specified number of events, generating random orders and processing them through the order book. It also collects statistics about the simulation
 int Simulator::random_price() {
     std::uniform_int_distribution<int> distribution(95, 105);
     return distribution(rng_);
 }
 
-//returns a random quantity for an order, which is a random integer between 1 and 20.
+//returns a random quantity for an order, which is a random integer between 1 and 20
 Quantity Simulator::random_quantity() {
     std::uniform_int_distribution<Quantity> distribution(1, 20);
     return distribution(rng_);
 }
 
-//returns a random trader ID for an order, which is a random integer between 1 and 1000.
+//returns a random trader ID for an order, which is a random integer between 1 and 1000
 std::uint64_t Simulator::random_trader_id() {
     std::uniform_int_distribution<std::uint64_t> distribution(1, 1000);
     return distribution(rng_);
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability.
+//returns true if the next event should be a cancel event, based on a 10% probability
 OrderId Simulator::choose_order_to_cancel() {
 
     if (known_order_ids_.empty()) {
@@ -41,13 +41,13 @@ OrderId Simulator::choose_order_to_cancel() {
     return known_order_ids_[distribution(rng_)];
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability.
+//returns true if the next event should be a cancel event, based on a 10% probability
 bool Simulator::should_cancel() {
     std::uniform_int_distribution<int> distribution(1, 10);
     return distribution(rng_) == 1;
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability.
+//returns true if the next event should be a cancel event, based on a 10% probability
 Order Simulator::generate_order() {
     std::uniform_int_distribution<int> side_distribution(0, 1);
     Side side;
@@ -77,31 +77,40 @@ Order Simulator::generate_order() {
     return order;
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability.
-void Simulator::process_order(const Order& order) {
+//returns true if the next event should be a cancel event, based on a 10% probability
+void Simulator::process_order(const Order& order, std::size_t event_number, DataWriter& writer) {
     auto trades = order_book_.submit(order);
     stats_.orders_submitted++;
 
-    //update statistics based on the side of the order
     if (order.side == Side::Buy) {
         stats_.buy_orders++;
     } else {
         stats_.sell_orders++;
     }
 
-    known_order_ids_.push_back(order.id);   
+    known_order_ids_.push_back(order.id);
 
-    //update statistics for trades executed during the simulation
+    writer.write_event(
+        event_number,
+        order,
+        order_book_
+    );
+
     for (const auto& trade : trades) {
         stats_.trades++;
         stats_.traded_quantity += trade.quantity;
         stats_.total_traded_value +=
             static_cast<double>(trade.price) *
             static_cast<double>(trade.quantity);
+
+        writer.write_trade(
+            event_number,
+            trade
+        );
     }
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability.
+//returns true if the next event should be a cancel event, based on a 10% probability
 void Simulator::process_cancel() {
     //if there are no known order IDs, return early since there are no orders to cancel
     if (known_order_ids_.empty()) {
@@ -125,7 +134,7 @@ void Simulator::process_cancel() {
             known_order_ids_.end()
         );
     } else {
-        //the order may already have been completely filled.
+        //the order may already have been completely filled
         known_order_ids_.erase(
             std::remove(
                 known_order_ids_.begin(),
@@ -145,15 +154,23 @@ double SimulationStats::average_trade_price() const {
     return total_traded_value / static_cast<double>(traded_quantity);
 }
 
-//runs the simulation for a specified number of events, generating random orders and processing them through the order book. It also collects statistics about the simulation.
-SimulationStats Simulator::run(std::size_t number_of_events) {
+//runs the simulation for a specified number of events, generating random orders and processing them through the order book and collects statistics about the simulation
+SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer) {
     stats_ = SimulationStats{};
     for (std::size_t i = 0; i < number_of_events; ++i) {
+        std::size_t event_number = i + 1;
+
         if (should_cancel() && !known_order_ids_.empty()) {
             process_cancel();
+
         } else {
             Order order = generate_order();
-            process_order(order);
+            process_order(order, event_number, writer);
+            writer.write_event(
+                event_number,
+                order,
+                order_book_
+            );
         }
     }
     return stats_;
