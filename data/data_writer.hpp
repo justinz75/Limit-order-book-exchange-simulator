@@ -27,3 +27,9 @@ public:
 private:
     std::ofstream file_;
 };
+
+enum class EventType {
+    NewOrder,
+    Cancel,
+    Trade
+};

@@ -5,10 +5,11 @@
 #include <iostream>
 #include <stdexcept>
 
+OrderBook order_book_;
+
 Simulator::Simulator(std::uint64_t seed)
     : rng_(seed) {
 }
-
 
 //runs the simulation for a specified number of events, generating random orders and processing them through the order book. It also collects statistics about the simulation
 int Simulator::random_price() {
@@ -176,3 +177,4 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
     return stats_;
 }
 
+void run(std::size_t number_of_events,DataWriter& writer);

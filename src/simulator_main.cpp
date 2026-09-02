@@ -4,11 +4,12 @@
 
 int main() {
     Simulator simulator(50); //initialize the simulator with a seed for the random number generator
+    DataWriter writer("data/simulation.csv");
 
     constexpr std::size_t number_of_events = 100000;
 
     //run the simulation for a specified number of events and collect statistics
-    SimulationStats stats = simulator.run(number_of_events);
+    SimulationStats stats = simulator.run(number_of_events, writer);
 
     std::cout << "Simulation complete\n";
     std::cout << "-------------------\n";
