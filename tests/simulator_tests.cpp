@@ -6,8 +6,9 @@
 int main() {
 
     Simulator simulator(50);
+    DataWriter writer("simulator_tests_output.csv");
 
-    SimulationStats stats = simulator.run(1000);
+    SimulationStats stats = simulator.run(1000, writer);
 
     assert(stats.orders_submitted > 0);
     assert(stats.buy_orders > 0);

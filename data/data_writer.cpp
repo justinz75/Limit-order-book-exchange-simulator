@@ -89,7 +89,8 @@ void DataWriter::write_trade(
     file_ << "TRADE" << ",";
 
     file_ << trade.incoming_order_id << ",";
-    file_ << "TRADE" << ",";
+    //a trade has both a buyer and a seller, so the side column is left empty
+    file_ << ",";
     file_ << trade.price << ",";
     file_ << trade.quantity << ",";
     file_ << ",,,\n";

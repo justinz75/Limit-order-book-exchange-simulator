@@ -27,7 +27,7 @@ struct SimulationStats {
 
 class Simulator {
     public:
-    //constructor for the Simulator class, which initializes the random number generator with a given seed (default is 42).
+    //constructor for the Simulator class, which initializes the random number generator with a given seed (default is 50).
         Simulator(std::uint64_t seed = 50);
         SimulationStats run(std::size_t number_of_events, DataWriter& writer);
 
@@ -38,6 +38,7 @@ class Simulator {
 
         OrderId next_order_id_ = 1;
         std::uint64_t next_trader_id_ = 1;
+        Timestamp next_timestamp_ = 1;
 
         std::vector<OrderId> known_order_ids_;
 

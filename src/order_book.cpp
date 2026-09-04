@@ -6,7 +6,8 @@ std::optional<Price> OrderBook::best_bid() const {
     if (bids_.empty()) {
         return std::nullopt;
     }
-    return std::prev(bids_.end())->first;
+    //bids_ is sorted with std::greater, so the highest bid is the first element
+    return bids_.begin()->first;
 }
 
 std::optional<Price> OrderBook::best_ask() const {

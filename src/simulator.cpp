@@ -5,13 +5,11 @@
 #include <iostream>
 #include <stdexcept>
 
-OrderBook order_book_;
-
 Simulator::Simulator(std::uint64_t seed)
     : rng_(seed) {
 }
 
-//runs the simulation for a specified number of events, generating random orders and processing them through the order book. It also collects statistics about the simulation
+//returns a random price for an order, which is a random integer between 95 and 105
 int Simulator::random_price() {
     std::uniform_int_distribution<int> distribution(95, 105);
     return distribution(rng_);
@@ -29,7 +27,7 @@ std::uint64_t Simulator::random_trader_id() {
     return distribution(rng_);
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability
+//chooses a random order ID from the known order IDs, or 0 if there are none
 OrderId Simulator::choose_order_to_cancel() {
 
     if (known_order_ids_.empty()) {
@@ -48,7 +46,7 @@ bool Simulator::should_cancel() {
     return distribution(rng_) == 1;
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability
+//generates a random limit order with a unique ID, random trader ID, side, price and quantity
 Order Simulator::generate_order() {
     std::uniform_int_distribution<int> side_distribution(0, 1);
     Side side;
@@ -73,12 +71,13 @@ Order Simulator::generate_order() {
         side,
         OrderType::Limit,
         price,
-        quantity
+        quantity,
+        next_timestamp_++
     };
     return order;
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability
+//submits an order to the order book, records the resulting trades and updates the statistics
 void Simulator::process_order(const Order& order, std::size_t event_number, DataWriter& writer) {
     auto trades = order_book_.submit(order);
     stats_.orders_submitted++;
@@ -111,7 +110,7 @@ void Simulator::process_order(const Order& order, std::size_t event_number, Data
     }
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability
+//cancels a randomly chosen known order and updates the statistics
 void Simulator::process_cancel() {
     //if there are no known order IDs, return early since there are no orders to cancel
     if (known_order_ids_.empty()) {
@@ -167,14 +166,7 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
         } else {
             Order order = generate_order();
             process_order(order, event_number, writer);
-            writer.write_event(
-                event_number,
-                order,
-                order_book_
-            );
         }
     }
     return stats_;
 }
-
-void run(std::size_t number_of_events,DataWriter& writer);
