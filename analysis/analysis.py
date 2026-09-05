@@ -37,6 +37,25 @@ plt.title("Mid Price Over Time")
 plt.savefig(plots_dir / "mid_price_over_time.png")
 plt.close()
 
+#plot book depth
+sample = df.iloc[:5000]
+
+plt.figure()
+plt.plot(sample["event"], sample["bid_depth"], label="Bid Depth")
+plt.plot(sample["event"], sample["ask_depth"], label="Ask Depth")
+plt.xlabel("Event")
+plt.ylabel("Resting Quantity (Top 5 Levels)")
+plt.title("Order Book Depth Over Time")
+plt.legend()
+plt.savefig(plots_dir / "book_depth_over_time.png")
+plt.close()
+
+#calculate order book imbalance
+depth = df.loc[df["event_type"] == "NEW_ORDER", ["bid_depth", "ask_depth"]]
+total_depth = depth["bid_depth"] + depth["ask_depth"]
+imbalance = ((depth["bid_depth"] - depth["ask_depth"]) / total_depth.where(total_depth > 0)).dropna()
+print("Mean book imbalance:", imbalance.mean(), flush=True)
+
 #calculate trade volume
 trade_volume = df.loc[df["event_type"] == "TRADE","quantity"].sum()
 print("Total traded volume:", trade_volume, flush=True)

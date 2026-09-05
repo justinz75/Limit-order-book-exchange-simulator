@@ -28,6 +28,16 @@ class OrderBook {
 
         Quantity quantity_at_price(Side side, Price price) const;
 
+        //a single price level of the book: the price and the total quantity resting at it
+        struct PriceLevelSnapshot {
+            Price price;
+            Quantity quantity;
+        };
+
+        //return the price levels nearest the top of the book, at most 'levels' of them, best first
+        std::vector<PriceLevelSnapshot> bid_depth(std::size_t levels) const;
+        std::vector<PriceLevelSnapshot> ask_depth(std::size_t levels) const;
+
     private:
         //the order book is represented as two separate maps: one for asks and one for bids.
         AskBook asks_;
@@ -44,14 +54,6 @@ class OrderBook {
             Price price;
             std::list<Order>::iterator order_iterator;
         };
-
-        struct PriceLevelSnapshot {
-            Price price;
-            Quantity quantity;
-        };
-
-        std::vector<PriceLevelSnapshot> bid_depth(std::size_t levels) const;
-        std::vector<PriceLevelSnapshot> ask_depth(std::size_t levels) const;
 
         std::unordered_map<OrderId, OrderLocation> order_index_;
 };

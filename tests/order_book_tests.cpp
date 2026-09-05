@@ -71,6 +71,28 @@ int main() {
     assert(market_data_book.quantity_at_price(Side::Sell, 110) == 10);
     assert(market_data_book.quantity_at_price(Side::Sell, 115) == 8);
 
+    //test 6: read the depth of each side of the book
+    auto bid_levels = market_data_book.bid_depth(5);
+    assert(bid_levels.size() == 2);
+    assert(bid_levels[0].price == 105 && bid_levels[0].quantity == 10);
+    assert(bid_levels[1].price == 100 && bid_levels[1].quantity == 10);
+
+    auto ask_levels = market_data_book.ask_depth(5);
+    assert(ask_levels.size() == 2);
+    assert(ask_levels[0].price == 110 && ask_levels[0].quantity == 10);
+    assert(ask_levels[1].price == 115 && ask_levels[1].quantity == 8);
+
+    //asking for fewer levels than the book holds returns only the best ones
+    assert(market_data_book.bid_depth(1).size() == 1);
+    assert(market_data_book.bid_depth(1)[0].price == 105);
+    assert(market_data_book.ask_depth(1).size() == 1);
+    assert(market_data_book.ask_depth(1)[0].price == 110);
+
+    //an empty book has no depth on either side
+    OrderBook empty_book;
+    assert(empty_book.bid_depth(5).empty());
+    assert(empty_book.ask_depth(5).empty());
+
     std::cout << "All tests passed" << std::endl;
     return 0;
 }

@@ -1,5 +1,8 @@
 #include "data_writer.hpp"
 
+//how many price levels on each side the depth columns are totalled over
+constexpr std::size_t depth_levels = 5;
+
 DataWriter::DataWriter(const std::string& filename)
     : file_(filename) {
 
@@ -25,7 +28,9 @@ void DataWriter::write_header() {
         << "best_bid,"
         << "best_ask,"
         << "spread,"
-        << "mid_price\n";
+        << "mid_price,"
+        << "bid_depth,"
+        << "ask_depth\n";
 }
 
 //writes a order event to the output file
@@ -76,6 +81,22 @@ void DataWriter::write_event(
         file_ << mid_price.value();
     }
 
+    file_ << ",";
+
+    //total quantity resting in the price levels nearest the top of each side of the book
+    Quantity bid_quantity = 0;
+    for (const auto& level : order_book.bid_depth(depth_levels)) {
+        bid_quantity += level.quantity;
+    }
+
+    Quantity ask_quantity = 0;
+    for (const auto& level : order_book.ask_depth(depth_levels)) {
+        ask_quantity += level.quantity;
+    }
+
+    file_ << bid_quantity << ",";
+    file_ << ask_quantity;
+
     file_ << "\n";
 }
 
@@ -93,5 +114,5 @@ void DataWriter::write_trade(
     file_ << ",";
     file_ << trade.price << ",";
     file_ << trade.quantity << ",";
-    file_ << ",,,\n";
+    file_ << ",,,,,\n";
 }

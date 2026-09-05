@@ -60,6 +60,48 @@ Quantity OrderBook::quantity_at_price(Side side, Price price) const {
     return total;
 }
 
+//walks the bid book from the best price down and totals the quantity resting at each level
+std::vector<OrderBook::PriceLevelSnapshot> OrderBook::bid_depth(std::size_t levels) const {
+    std::vector<PriceLevelSnapshot> snapshots;
+
+    //bids_ is sorted with std::greater, so iterating forward starts at the best bid
+    for (const auto& price_level : bids_) {
+        if (snapshots.size() >= levels) {
+            break;
+        }
+
+        Quantity total = 0;
+        for (const auto& order : price_level.second) {
+            total += order.remaining_quantity;
+        }
+
+        snapshots.push_back({price_level.first, total});
+    }
+
+    return snapshots;
+}
+
+//walks the ask book from the best price up and totals the quantity resting at each level
+std::vector<OrderBook::PriceLevelSnapshot> OrderBook::ask_depth(std::size_t levels) const {
+    std::vector<PriceLevelSnapshot> snapshots;
+
+    //asks_ is sorted in ascending order, so iterating forward starts at the best ask
+    for (const auto& price_level : asks_) {
+        if (snapshots.size() >= levels) {
+            break;
+        }
+
+        Quantity total = 0;
+        for (const auto& order : price_level.second) {
+            total += order.remaining_quantity;
+        }
+
+        snapshots.push_back({price_level.first, total});
+    }
+
+    return snapshots;
+}
+
 std::vector<Trade> OrderBook::match_buy(Order& incoming) {
     std::vector<Trade> trades;
     //while the incoming buy order has remaining quantity and there are asks in the order book

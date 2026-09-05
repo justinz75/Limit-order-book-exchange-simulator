@@ -1,0 +1,11 @@
+#compiler and linker output
+*.exe
+*.obj
+*.ilk
+*.pdb
+
+#build directory
+build/
+
+#csv written by the simulator tests
+simulator_tests_output.csv
