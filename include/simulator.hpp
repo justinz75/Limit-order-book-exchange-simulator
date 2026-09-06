@@ -38,8 +38,10 @@ class Simulator {
         std::mt19937_64 rng_;
 
         OrderId next_order_id_ = 1;
-        std::uint64_t next_trader_id_ = 1;
         Timestamp next_timestamp_ = 1;
+
+        //the price the market is currently trading around
+        double reference_price_ = 100.0;
 
         std::vector<OrderId> known_order_ids_;
 
@@ -48,10 +50,10 @@ class Simulator {
         //generates a random order with a unique order ID, random trader ID, price, and quantity.
         Order generate_order();
 
-        //returns true if the next event should be a cancel event, based on a 10% probability.
+        //returns true if the next event should cancel a resting order rather than submit a new one.
         bool should_cancel();
 
-        //returns true if the next generated order should be a market order, based on a 10% probability.
+        //returns true if the next generated order should be a market order.
         bool should_be_market();
 
         //chooses a random order ID from the known_order_ids_ vector for cancellation, or returns 0 if there are no known orders.
@@ -63,8 +65,16 @@ class Simulator {
         //processes the cancellation of an order in the order book and updates the simulation statistics accordingly.
         void process_cancel();
 
-        //generates a random price for an order within a specified range (e.g., 1 to 100).
-        int random_price();
+        //returns the price for a limit order, placed a short way off the reference price on the
+        //passive side for its direction.
+        Price random_price(Side side);
+
+        //returns how far from the reference price an order is placed.
+        Price random_offset();
+
+        //moves the reference price by a small random step, so that resting orders are eventually
+        //overtaken by the market instead of sitting in the book forever.
+        void step_reference_price();
 
         //generates a random quantity for an order within a specified range (e.g., 1 to 100).
         Quantity random_quantity();

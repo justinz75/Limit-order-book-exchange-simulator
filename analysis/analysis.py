@@ -15,11 +15,15 @@ print(df.describe(), flush=True)
 df.info()
 print(df.isna().sum(), flush=True)
 
-#plot spread
-sample = df.iloc[:5000]
+#the market data columns are only filled in on order rows, so the trades are dropped before plotting
+book = df[df["event_type"] == "NEW_ORDER"]
 
+#the raw series jump about too much to read over this many events, so the slower moving ones are averaged
+smoothing_window = 500
+
+#plot spread
 plt.figure()
-plt.plot(sample["event"], sample["spread"])
+plt.plot(book["event"], book["spread"].rolling(smoothing_window).mean())
 plt.xlabel("Event")
 plt.ylabel("Bid-Ask Spread")
 plt.title("Bid-Ask Spread Over Time")
@@ -27,10 +31,8 @@ plt.savefig(plots_dir / "spread_over_time.png")
 plt.close()
 
 #plot mid price
-sample = df.iloc[:5000]
-
 plt.figure()
-plt.plot(sample["event"], sample["mid_price"])
+plt.plot(book["event"], book["mid_price"], linewidth=0.7)
 plt.xlabel("Event")
 plt.ylabel("Mid Price")
 plt.title("Mid Price Over Time")
@@ -38,11 +40,9 @@ plt.savefig(plots_dir / "mid_price_over_time.png")
 plt.close()
 
 #plot book depth
-sample = df.iloc[:5000]
-
 plt.figure()
-plt.plot(sample["event"], sample["bid_depth"], label="Bid Depth")
-plt.plot(sample["event"], sample["ask_depth"], label="Ask Depth")
+plt.plot(book["event"], book["bid_depth"].rolling(smoothing_window).mean(), label="Bid Depth")
+plt.plot(book["event"], book["ask_depth"].rolling(smoothing_window).mean(), label="Ask Depth")
 plt.xlabel("Event")
 plt.ylabel("Resting Quantity (Top 5 Levels)")
 plt.title("Order Book Depth Over Time")

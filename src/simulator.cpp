@@ -2,17 +2,49 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
-#include <stdexcept>
 
 Simulator::Simulator(std::uint64_t seed)
     : rng_(seed) {
 }
 
-//returns a random price for an order, which is a random integer between 95 and 105
-int Simulator::random_price() {
-    std::uniform_int_distribution<int> distribution(95, 105);
-    return distribution(rng_);
+//the size of the random step the reference price takes each event
+constexpr double reference_step_size = 0.03;
+
+//the reference price is not allowed below this, since a price cannot be negative
+constexpr double minimum_reference_price = 1.0;
+
+//how tightly orders cluster around the reference price. a higher value keeps them closer to it
+constexpr double offset_tightness = 0.55;
+
+//moves the reference price by a small random step. letting it wander is what allows resting orders to
+//be reached and traded rather than sitting in the book forever, so it is deliberately not pulled back
+//toward any particular level
+void Simulator::step_reference_price() {
+    std::normal_distribution<double> noise(0.0, reference_step_size);
+    reference_price_ += noise(rng_);
+
+    if (reference_price_ < minimum_reference_price) {
+        reference_price_ = minimum_reference_price;
+    }
+}
+
+//most orders arrive at or near the reference price, with a thinner tail further out
+Price Simulator::random_offset() {
+    std::geometric_distribution<int> distribution(offset_tightness);
+    return static_cast<Price>(distribution(rng_));
+}
+
+//a buy is placed at or below the reference price and a sell at or above it, so an order only trades
+//when it is priced aggressively enough to reach the other side
+Price Simulator::random_price(Side side) {
+    Price reference = static_cast<Price>(std::llround(reference_price_));
+    Price offset = random_offset();
+
+    if (side == Side::Buy) {
+        return reference - offset;
+    }
+
+    return reference + offset;
 }
 
 //returns a random quantity for an order, which is a random integer between 1 and 20
@@ -40,16 +72,23 @@ OrderId Simulator::choose_order_to_cancel() {
     return known_order_ids_[distribution(rng_)];
 }
 
-//returns true if the next event should be a cancel event, based on a 10% probability
+//the share of events that cancel a resting order rather than submitting a new one. orders arrive
+//faster than they trade, so without a healthy cancel rate the book only ever grows
+constexpr int cancel_percentage = 40;
+
+//the share of new orders that arrive as market orders
+constexpr int market_order_percentage = 10;
+
+//returns true if the next event should cancel a resting order rather than submit a new one
 bool Simulator::should_cancel() {
-    std::uniform_int_distribution<int> distribution(1, 10);
-    return distribution(rng_) == 1;
+    std::uniform_int_distribution<int> distribution(1, 100);
+    return distribution(rng_) <= cancel_percentage;
 }
 
-//returns true if the next generated order should be a market order, based on a 10% probability
+//returns true if the next generated order should be a market order
 bool Simulator::should_be_market() {
-    std::uniform_int_distribution<int> distribution(1, 10);
-    return distribution(rng_) == 1;
+    std::uniform_int_distribution<int> distribution(1, 100);
+    return distribution(rng_) <= market_order_percentage;
 }
 
 //generates a random order with a unique ID, random trader ID, side, type, price and quantity
@@ -67,7 +106,7 @@ Order Simulator::generate_order() {
     //generate a unique order ID, random trader ID, price, and quantity for the order
     OrderId order_id = next_order_id_++;
     std::uint64_t trader_id = random_trader_id();
-    Price price = random_price();
+    Price price = random_price(side);
     Quantity quantity = random_quantity();
 
     //a market order takes whatever the book offers, so it carries no price of its own
@@ -105,13 +144,13 @@ void Simulator::process_order(const Order& order, std::size_t event_number, Data
         stats_.market_orders++;
     }
 
-    known_order_ids_.push_back(order.id);
-
     writer.write_event(
         event_number,
         order,
         order_book_
     );
+
+    Quantity filled = 0;
 
     for (const auto& trade : trades) {
         stats_.trades++;
@@ -120,10 +159,17 @@ void Simulator::process_order(const Order& order, std::size_t event_number, Data
             static_cast<double>(trade.price) *
             static_cast<double>(trade.quantity);
 
+        filled += trade.quantity;
+
         writer.write_trade(
             event_number,
             trade
         );
+    }
+
+    //only a limit order with quantity left over is resting in the book, so only those can be cancelled
+    if (order.type == OrderType::Limit && filled < order.remaining_quantity) {
+        known_order_ids_.push_back(order.id);
     }
 }
 
@@ -140,27 +186,17 @@ void Simulator::process_cancel() {
     //attempt to cancel the order in the order book and update statistics accordingly
     if (order_book_.cancel_order(order_id)) {
         stats_.successful_cancels++;
-
-        //remove the order ID from the known_order_ids_ vector if the cancel was successful
-        known_order_ids_.erase(
-            std::remove(
-                known_order_ids_.begin(),
-                known_order_ids_.end(),
-                order_id
-            ),
-            known_order_ids_.end()
-        );
-    } else {
-        //the order may already have been completely filled
-        known_order_ids_.erase(
-            std::remove(
-                known_order_ids_.begin(),
-                known_order_ids_.end(),
-                order_id
-            ),
-            known_order_ids_.end()
-        );
     }
+
+    //the order is forgotten either way, since a cancel only fails once the order has been filled
+    known_order_ids_.erase(
+        std::remove(
+            known_order_ids_.begin(),
+            known_order_ids_.end(),
+            order_id
+        ),
+        known_order_ids_.end()
+    );
 }
 
 double SimulationStats::average_trade_price() const {
@@ -176,6 +212,9 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
     stats_ = SimulationStats{};
     for (std::size_t i = 0; i < number_of_events; ++i) {
         std::size_t event_number = i + 1;
+
+        //the market drifts a little between events, whether or not an order arrives
+        step_reference_price();
 
         if (should_cancel() && !known_order_ids_.empty()) {
             process_cancel();

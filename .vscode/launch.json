@@ -2,10 +2,22 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Package: Monte_Carlo_Price_Simulator",
-            "type": "debugpy",
+            "name": "Simulator",
+            "type": "cppvsdbg",
             "request": "launch",
-            "module": "Monte_Carlo_Price_Simulator"
+            "program": "${workspaceFolder}/build/Release/simulator.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cmake build"
+        },
+        {
+            "name": "Order book tests",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/Release/order_book_tests.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cmake build"
         }
     ]
 }
