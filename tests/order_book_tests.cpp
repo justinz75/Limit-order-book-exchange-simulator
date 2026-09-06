@@ -93,6 +93,41 @@ int main() {
     assert(empty_book.bid_depth(5).empty());
     assert(empty_book.ask_depth(5).empty());
 
+    //test 7: market orders take the best available price and never rest in the book
+    OrderBook market_order_book;
+    market_order_book.submit(Order{20, 200, Side::Sell, OrderType::Limit, 110, 5, 110});
+    market_order_book.submit(Order{21, 201, Side::Sell, OrderType::Limit, 112, 5, 120});
+
+    //a market buy sweeps the cheapest asks first, whatever price it carries
+    auto market_trades = market_order_book.submit(
+        Order{22, 202, Side::Buy, OrderType::Market, 0, 8, 130}
+    );
+    assert(market_trades.size() == 2);
+    assert(market_trades[0].price == 110 && market_trades[0].quantity == 5);
+    assert(market_trades[1].price == 112 && market_trades[1].quantity == 3);
+    assert(market_order_book.best_ask().has_value() && market_order_book.best_ask().value() == 112);
+    assert(market_order_book.quantity_at_price(Side::Sell, 112) == 2);
+
+    //the part of a market order the book cannot fill is discarded instead of resting
+    market_order_book.submit(Order{23, 203, Side::Buy, OrderType::Market, 0, 100, 140});
+    assert(!market_order_book.best_ask().has_value());
+    assert(!market_order_book.best_bid().has_value());
+
+    //a market order against an empty book trades nothing and leaves the book empty
+    assert(market_order_book.submit(
+        Order{24, 204, Side::Sell, OrderType::Market, 0, 5, 150}
+    ).empty());
+    assert(!market_order_book.best_bid().has_value());
+    assert(!market_order_book.best_ask().has_value());
+
+    //a limit order still refuses to cross, so the two types stay distinguishable
+    market_order_book.submit(Order{25, 205, Side::Sell, OrderType::Limit, 110, 5, 160});
+    auto limit_trades = market_order_book.submit(
+        Order{26, 206, Side::Buy, OrderType::Limit, 105, 5, 170}
+    );
+    assert(limit_trades.empty());
+    assert(market_order_book.best_bid().has_value() && market_order_book.best_bid().value() == 105);
+
     std::cout << "All tests passed" << std::endl;
     return 0;
 }

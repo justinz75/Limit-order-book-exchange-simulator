@@ -111,8 +111,8 @@ std::vector<Trade> OrderBook::match_buy(Order& incoming) {
         Price best_ask_price = best_ask_it->first;
         PriceLevel& best_ask_level = best_ask_it->second;
 
-        //no more matching possible if the incoming buy order's price is less than the best ask price
-        if (incoming.price < best_ask_price) {
+        //a market order takes whatever the book offers, so only a limit order stops on price
+        if (incoming.type == OrderType::Limit && incoming.price < best_ask_price) {
             break; 
         }
 
@@ -160,8 +160,8 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
         Price best_bid_price = best_bid_it->first;
         PriceLevel& best_bid_level = best_bid_it->second;
 
-        //no more matching possible if the incoming sell order's price is less than the best bid price
-        if (incoming.price > best_bid_price) {
+        //a market order takes whatever the book offers, so only a limit order stops on price
+        if (incoming.type == OrderType::Limit && incoming.price > best_bid_price) {
             break; 
         }
 
@@ -202,18 +202,19 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
 }
 
 //submits an order to the order book and returns a vector of trades that occurred as a result of the submission.
+//an unfilled limit order rests in the book, while whatever a market order could not fill is discarded
 std::vector<Trade> OrderBook::submit(Order order) {
     std::vector<Trade> trades;
     if (order.side == Side::Buy) {
         trades = match_buy(order);
         //if buy order is not fully filled, add the remaining quantity to the bid book
-        if (order.remaining_quantity > 0) {
+        if (order.remaining_quantity > 0 && order.type == OrderType::Limit) {
             add_to_book(order);
         }
     } else if (order.side == Side::Sell) {
         trades = match_sell(order);
         //if sell order is not fully filled, add the remaining quantity to the ask book
-        if (order.remaining_quantity > 0) {
+        if (order.remaining_quantity > 0 && order.type == OrderType::Limit) {
             add_to_book(order);
         }
     }
