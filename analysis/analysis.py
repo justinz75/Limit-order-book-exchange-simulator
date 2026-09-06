@@ -56,6 +56,10 @@ total_depth = depth["bid_depth"] + depth["ask_depth"]
 imbalance = ((depth["bid_depth"] - depth["ask_depth"]) / total_depth.where(total_depth > 0)).dropna()
 print("Mean book imbalance:", imbalance.mean(), flush=True)
 
+#calculate market order share
+new_orders = df[df["event_type"] == "NEW_ORDER"]
+print("Market order share:", (new_orders["order_type"] == "MARKET").mean(), flush=True)
+
 #calculate trade volume
 trade_volume = df.loc[df["event_type"] == "TRADE","quantity"].sum()
 print("Total traded volume:", trade_volume, flush=True)

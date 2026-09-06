@@ -46,7 +46,13 @@ bool Simulator::should_cancel() {
     return distribution(rng_) == 1;
 }
 
-//generates a random limit order with a unique ID, random trader ID, side, price and quantity
+//returns true if the next generated order should be a market order, based on a 10% probability
+bool Simulator::should_be_market() {
+    std::uniform_int_distribution<int> distribution(1, 10);
+    return distribution(rng_) == 1;
+}
+
+//generates a random order with a unique ID, random trader ID, side, type, price and quantity
 Order Simulator::generate_order() {
     std::uniform_int_distribution<int> side_distribution(0, 1);
     Side side;
@@ -64,12 +70,19 @@ Order Simulator::generate_order() {
     Price price = random_price();
     Quantity quantity = random_quantity();
 
+    //a market order takes whatever the book offers, so it carries no price of its own
+    OrderType type = OrderType::Limit;
+    if (should_be_market()) {
+        type = OrderType::Market;
+        price = 0;
+    }
+
     //create and return the order object with the generated attributes
     Order order{
         order_id,
         trader_id,
         side,
-        OrderType::Limit,
+        type,
         price,
         quantity,
         next_timestamp_++
@@ -86,6 +99,10 @@ void Simulator::process_order(const Order& order, std::size_t event_number, Data
         stats_.buy_orders++;
     } else {
         stats_.sell_orders++;
+    }
+
+    if (order.type == OrderType::Market) {
+        stats_.market_orders++;
     }
 
     known_order_ids_.push_back(order.id);

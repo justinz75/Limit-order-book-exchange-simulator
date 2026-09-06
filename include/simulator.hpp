@@ -13,6 +13,7 @@ struct SimulationStats {
     std::size_t orders_submitted = 0;
     std::size_t buy_orders = 0;
     std::size_t sell_orders = 0;
+    std::size_t market_orders = 0;
     std::size_t cancel_attempts = 0;
     std::size_t successful_cancels = 0;
 
@@ -49,6 +50,9 @@ class Simulator {
 
         //returns true if the next event should be a cancel event, based on a 10% probability.
         bool should_cancel();
+
+        //returns true if the next generated order should be a market order, based on a 10% probability.
+        bool should_be_market();
 
         //chooses a random order ID from the known_order_ids_ vector for cancellation, or returns 0 if there are no known orders.
         OrderId choose_order_to_cancel();

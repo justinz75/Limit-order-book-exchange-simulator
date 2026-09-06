@@ -23,6 +23,7 @@ void DataWriter::write_header() {
         << "event_type,"
         << "order_id,"
         << "side,"
+        << "order_type,"
         << "price,"
         << "quantity,"
         << "best_bid,"
@@ -51,7 +52,21 @@ void DataWriter::write_event(
     }
 
     file_ << ",";
-    file_ << order.price << ",";
+
+    if (order.type == OrderType::Limit) {
+        file_ << "LIMIT";
+    } else {
+        file_ << "MARKET";
+    }
+
+    file_ << ",";
+
+    //a market order carries no price of its own, so the column is left empty for it
+    if (order.type == OrderType::Limit) {
+        file_ << order.price;
+    }
+
+    file_ << ",";
     file_ << order.remaining_quantity << ",";
 
     auto best_bid = order_book.best_bid();
@@ -110,8 +125,8 @@ void DataWriter::write_trade(
     file_ << "TRADE" << ",";
 
     file_ << trade.incoming_order_id << ",";
-    //a trade has both a buyer and a seller, so the side column is left empty
-    file_ << ",";
+    //a trade has both a buyer and a seller, and no order type of its own
+    file_ << ",,";
     file_ << trade.price << ",";
     file_ << trade.quantity << ",";
     file_ << ",,,,,\n";

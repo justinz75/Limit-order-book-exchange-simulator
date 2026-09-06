@@ -26,6 +26,9 @@ int main() {
     std::cout << "Sell orders: "
               << stats.sell_orders << '\n';
 
+    std::cout << "Market orders: "
+              << stats.market_orders << '\n';
+
     std::cout << "Cancel attempts: "
               << stats.cancel_attempts << '\n';
 
