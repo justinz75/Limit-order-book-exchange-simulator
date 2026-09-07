@@ -70,11 +70,17 @@ touch. That saves having to remember which end of which container is the interes
 to get wrong: an early version read the bid side from the wrong end and quietly reported the *lowest*
 bid as the best bid for a while, which is what test 5 in `tests/order_book_tests.cpp` now pins down.
 
-Within a price level the orders sit in a `std::list` in arrival order, and matching always takes from the
-front, which gives time priority. A list is used rather than a vector because of cancels: `OrderBook`
-also keeps an `unordered_map` from order id to an iterator into the list holding that order, so
-cancelling is a hash lookup and a list erase rather than a scan of the level. List iterators stay valid
-when other elements are erased, which is what makes storing them safe.
+Within a price level the orders sit in arrival order and matching always takes from the front, which is
+what gives time priority. They are not held in a container of their own though. Every resting order in
+the book lives in one `std::vector`, and each level threads its own queue through that vector by index,
+so a level is just a head and a tail. `OrderBook` keeps an `unordered_map` from order id to the slot
+holding that order, which is what makes a cancel a hash lookup and a few index writes rather than a scan
+of the level. Slots left behind by orders that trade or are cancelled go on a free list and are handed
+out again, so a book that stays roughly the same size over time stops allocating.
+
+Each level also keeps a running total of the quantity resting at it, kept up to date as orders join,
+leave and are partly filled, so reading the depth does not mean walking the queue. That turned out to
+matter considerably more than the arena did, which is covered below.
 
 Trades execute at the resting order's price rather than the incoming one's, so the arriving order gets
 the price improvement when it crosses further than it needed to.
@@ -86,25 +92,51 @@ at.
 
 ## Performance
 
-`benchmarks/benchmark.cpp` runs a million orders through the book and times the three operations
-separately. Measured on an AMD Ryzen 7 7435HS, built with MSVC 19.44 in release:
+`benchmarks/benchmark.cpp` puts a million orders through the book and times each operation on its own,
+five times over, reporting the median with the range beside it. A single timing of this moves around by
+more than the differences that are worth measuring, which is worth knowing before reading anything into
+one. Measured on an AMD Ryzen 7 7435HS, built with MSVC 19.44 in release:
 
 ```
-submit                     0.50 s        1.99 M ops/s    501.43 ns/op
-cancel                     0.36 s        2.77 M ops/s    361.38 ns/op
-best bid and ask           0.01 s      142.57 M ops/s      7.01 ns/op
+submit                    2.22 M ops/s    450.5 ns/op   (448.0 to 453.3)
+cancel                    4.29 M ops/s    233.0 ns/op   (229.9 to 237.3)
+best bid                310.06 M ops/s      3.2 ns/op   (2.9 to 4.4)
+bid depth, 5 deep         2.85 M ops/s    351.2 ns/op   (341.5 to 359.4)
 ```
 
-23% of the submitted orders crossed and had to be matched; the rest came to rest in the book. Reading
-the top of the book is essentially free because it is one step to the front of a map.
+23% of the submitted orders crossed and had to be matched; the rest came to rest in the book.
 
-The interesting number is `submit`, and 500 ns is not fast for a matching engine. Nearly all of it goes
-on memory: every resting order allocates a list node, every new price level allocates a map node, and
-the map is a red-black tree, so the levels the search touches are scattered rather than adjacent. The
-usual fix is to lean on prices being bounded and known in advance and replace the map with a flat array
-indexed by tick, which turns the level lookup into an array index and lets the levels sit next to each
-other in memory. Pooling the order nodes would take out most of what is left. I have not done either
-yet.
+The orders used to sit in a `std::list` at each price level, one allocation apiece. Moving them into the
+shared arena was meant to take that allocation off the hot path. Running the same benchmark against both
+versions:
+
+| | before | after |
+|---|---|---|
+| submit | 472.3 ns | 450.5 ns |
+| cancel | 294.0 ns | 233.0 ns |
+| best bid | 2.9 ns | 3.2 ns |
+| bid depth, 5 deep | 27.0 ms | 351 ns |
+
+Submit is the number that was supposed to move and it barely did: about 5%, which is not much more than
+the spread between runs. The allocation was not where the time was going, so the premise was wrong.
+Cancel did improve, by about a fifth.
+
+Depth is not really a speedup so much as a different complexity. The old version added up the quantity
+at a level by walking every order resting there, and this benchmark leaves 50,000 orders at each level,
+so five levels meant reading a quarter of a million orders on every call. Each level now keeps a running
+total instead, which is a few reads however deep the book is. The 27 ms is a worst case built by the
+benchmark rather than anything the simulation produces.
+
+It still matters, because the CSV writer asks for depth on every event. A full 100,000 event run went
+from 1.18 s to 0.55 s, which is the one end to end number here and the honest measure of what the change
+bought.
+
+450 ns for a submit is not fast for a matching engine, and after the above I no longer think the level
+storage is the reason. The likeliest remaining cost is the order id index: an `unordered_map` that
+allocates a node per resting order and rehashes as the book grows, which none of this touched. The other
+standard step is to lean on prices being bounded and swap the level map for a flat array indexed by
+tick, so a lookup becomes an array index and the levels sit next to each other in memory. Neither is
+done, and on the evidence above I would measure before assuming either one helps.
 
 ## The simulation
 

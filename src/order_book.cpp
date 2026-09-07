@@ -2,6 +2,74 @@
 #include "order_book.hpp"
 #include "trade.hpp"
 
+#include <algorithm>
+
+//takes a slot in the arena for an order. freed slots are handed out again first, so a book that is
+//busy but roughly the same size over time stops growing the arena and stops allocating altogether
+std::size_t OrderBook::acquire_slot(const Order& order) {
+    if (!free_slots_.empty()) {
+        std::size_t slot = free_slots_.back();
+        free_slots_.pop_back();
+
+        arena_[slot].order = order;
+        arena_[slot].previous = no_order;
+        arena_[slot].next = no_order;
+
+        return slot;
+    }
+
+    arena_.push_back(OrderNode{order, no_order, no_order});
+    return arena_.size() - 1;
+}
+
+//hands a slot back. the order is left where it is rather than cleared, since acquire_slot overwrites it
+void OrderBook::release_slot(std::size_t slot) {
+    free_slots_.push_back(slot);
+}
+
+//joins the back of the queue at a price level, which is what gives orders arrival order priority
+void OrderBook::link_into_level(PriceLevel& level, std::size_t slot) {
+    arena_[slot].previous = level.tail;
+    arena_[slot].next = no_order;
+
+    if (level.tail == no_order) {
+        level.head = slot;
+    } else {
+        arena_[level.tail].next = slot;
+    }
+
+    level.tail = slot;
+    level.total_quantity += arena_[slot].order.remaining_quantity;
+}
+
+//takes an order out of its level's queue. matching only ever removes the head, but a cancel can come
+//for an order anywhere in it, so both ends and the middle have to be handled
+void OrderBook::unlink_from_level(PriceLevel& level, std::size_t slot) {
+    std::size_t previous = arena_[slot].previous;
+    std::size_t next = arena_[slot].next;
+
+    if (previous == no_order) {
+        level.head = next;
+    } else {
+        arena_[previous].next = next;
+    }
+
+    if (next == no_order) {
+        level.tail = previous;
+    } else {
+        arena_[next].previous = previous;
+    }
+
+    level.total_quantity -= arena_[slot].order.remaining_quantity;
+
+    arena_[slot].previous = no_order;
+    arena_[slot].next = no_order;
+}
+
+std::size_t OrderBook::resting_order_count() const {
+    return arena_.size() - free_slots_.size();
+}
+
 std::optional<Price> OrderBook::best_bid() const {
     if (bids_.empty()) {
         return std::nullopt;
@@ -36,31 +104,24 @@ std::optional<double> OrderBook::mid_price() const {
             static_cast<double>(ask.value())) / 2.0;
 }
 
+//the level keeps its own running total, so this no longer has to walk the queue
 Quantity OrderBook::quantity_at_price(Side side, Price price) const {
-    Quantity total = 0;
-
     if (side == Side::Buy) {
         auto it = bids_.find(price);
         if (it == bids_.end()) {
             return 0;
         }
-        for (const auto& order : it->second) {
-            total += order.remaining_quantity;
-        }
-    } else {
-        auto it = asks_.find(price);
-        if (it == asks_.end()) {
-            return 0;
-        }
-        for (const auto& order : it->second) {
-            total += order.remaining_quantity;
-        }
+        return it->second.total_quantity;
     }
 
-    return total;
+    auto it = asks_.find(price);
+    if (it == asks_.end()) {
+        return 0;
+    }
+    return it->second.total_quantity;
 }
 
-//walks the bid book from the best price down and totals the quantity resting at each level
+//walks the bid book from the best price down and reports the quantity resting at each level
 std::vector<OrderBook::PriceLevelSnapshot> OrderBook::bid_depth(std::size_t levels) const {
     std::vector<PriceLevelSnapshot> snapshots;
 
@@ -70,18 +131,13 @@ std::vector<OrderBook::PriceLevelSnapshot> OrderBook::bid_depth(std::size_t leve
             break;
         }
 
-        Quantity total = 0;
-        for (const auto& order : price_level.second) {
-            total += order.remaining_quantity;
-        }
-
-        snapshots.push_back({price_level.first, total});
+        snapshots.push_back({price_level.first, price_level.second.total_quantity});
     }
 
     return snapshots;
 }
 
-//walks the ask book from the best price up and totals the quantity resting at each level
+//walks the ask book from the best price up and reports the quantity resting at each level
 std::vector<OrderBook::PriceLevelSnapshot> OrderBook::ask_depth(std::size_t levels) const {
     std::vector<PriceLevelSnapshot> snapshots;
 
@@ -91,12 +147,7 @@ std::vector<OrderBook::PriceLevelSnapshot> OrderBook::ask_depth(std::size_t leve
             break;
         }
 
-        Quantity total = 0;
-        for (const auto& order : price_level.second) {
-            total += order.remaining_quantity;
-        }
-
-        snapshots.push_back({price_level.first, total});
+        snapshots.push_back({price_level.first, price_level.second.total_quantity});
     }
 
     return snapshots;
@@ -113,11 +164,12 @@ std::vector<Trade> OrderBook::match_buy(Order& incoming) {
 
         //a market order takes whatever the book offers, so only a limit order stops on price
         if (incoming.type == OrderType::Limit && incoming.price < best_ask_price) {
-            break; 
+            break;
         }
 
         //match the incoming buy order with the resting sell order at the best ask price
-        Order& resting_order = best_ask_level.front();
+        std::size_t resting_slot = best_ask_level.head;
+        Order& resting_order = arena_[resting_slot].order;
         Quantity trade_quantity = std::min(incoming.remaining_quantity, resting_order.remaining_quantity);
         Price trade_price = resting_order.price;
 
@@ -137,13 +189,15 @@ std::vector<Trade> OrderBook::match_buy(Order& incoming) {
         //update quantities
         incoming.remaining_quantity -= trade_quantity;
         resting_order.remaining_quantity -= trade_quantity;
+        best_ask_level.total_quantity -= trade_quantity;
 
         //remove the resting order if fully filled
         if (resting_order.remaining_quantity == 0) {
             auto resting_order_id = resting_order.id;
-            best_ask_level.pop_front();
+            unlink_from_level(best_ask_level, resting_slot);
+            release_slot(resting_slot);
             order_index_.erase(resting_order_id);
-            if (best_ask_level.empty()) {
+            if (best_ask_level.head == no_order) {
                 asks_.erase(best_ask_it);
             }
         }
@@ -162,11 +216,12 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
 
         //a market order takes whatever the book offers, so only a limit order stops on price
         if (incoming.type == OrderType::Limit && incoming.price > best_bid_price) {
-            break; 
+            break;
         }
 
         //match the incoming sell order with the resting buy order at the best bid price
-        Order& resting_order = best_bid_level.front();
+        std::size_t resting_slot = best_bid_level.head;
+        Order& resting_order = arena_[resting_slot].order;
         Quantity trade_quantity = std::min(incoming.remaining_quantity, resting_order.remaining_quantity);
         Price trade_price = resting_order.price;
 
@@ -187,13 +242,15 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
         //update quantities
         incoming.remaining_quantity -= trade_quantity;
         resting_order.remaining_quantity -= trade_quantity;
+        best_bid_level.total_quantity -= trade_quantity;
 
         //remove the resting order if fully filled
         if (resting_order.remaining_quantity == 0) {
             auto resting_order_id = resting_order.id;
-            best_bid_level.pop_front();
+            unlink_from_level(best_bid_level, resting_slot);
+            release_slot(resting_slot);
             order_index_.erase(resting_order_id);
-            if (best_bid_level.empty()) {
+            if (best_bid_level.head == no_order) {
                 bids_.erase(best_bid_it);
             }
         }
@@ -223,27 +280,21 @@ std::vector<Trade> OrderBook::submit(Order order) {
 
 //adds an order to the order book and updates the order index for quick lookup
 void OrderBook::add_to_book(const Order& order) {
+    std::size_t slot = acquire_slot(order);
+
     //add the order to the appropriate book (bids or asks) based on its side
     if (order.side == Side::Buy) {
-        auto& price_level = bids_[order.price];
-        price_level.push_back(order);
-        auto iterator = std::prev(price_level.end());
-        order_index_[order.id] = {
-            order.side,
-            order.price,
-            iterator
-        };
+        link_into_level(bids_[order.price], slot);
     //if the order is a sell order, add it to the ask book
     } else {
-        auto& price_level = asks_[order.price];
-        price_level.push_back(order);
-        auto iterator = std::prev(price_level.end());
-        order_index_[order.id] = {
-            order.side,
-            order.price,
-            iterator
-        };
+        link_into_level(asks_[order.price], slot);
     }
+
+    order_index_[order.id] = {
+        order.side,
+        order.price,
+        slot
+    };
 }
 
 bool OrderBook::cancel_order(OrderId order_id) {
@@ -253,19 +304,34 @@ bool OrderBook::cancel_order(OrderId order_id) {
     }
     OrderLocation location = index_it->second;
     if (location.side == Side::Buy) {
-        auto& price_level = bids_.at(location.price);
-        price_level.erase(location.order_iterator);
-        if (price_level.empty()) {
-            bids_.erase(location.price);
+        auto level_it = bids_.find(location.price);
+
+        //the index should never point at a price the book has forgotten, but not checking would mean
+        //walking off the end of the map if it ever did
+        if (level_it == bids_.end()) {
+            order_index_.erase(index_it);
+            return false;
+        }
+
+        unlink_from_level(level_it->second, location.slot);
+        if (level_it->second.head == no_order) {
+            bids_.erase(level_it);
         }
 
     } else {
-        auto& price_level = asks_.at(location.price);
-        price_level.erase(location.order_iterator);
-        if (price_level.empty()) {
-            asks_.erase(location.price);
+        auto level_it = asks_.find(location.price);
+
+        if (level_it == asks_.end()) {
+            order_index_.erase(index_it);
+            return false;
+        }
+
+        unlink_from_level(level_it->second, location.slot);
+        if (level_it->second.head == no_order) {
+            asks_.erase(level_it);
         }
     }
+    release_slot(location.slot);
     order_index_.erase(index_it);
 
     return true;

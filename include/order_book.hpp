@@ -4,12 +4,12 @@
 #include "trade.hpp"
 #include "price.hpp"
 
+#include <cstddef>
 #include <map>
 #include <vector>
 #include <optional>
 
 #include <unordered_map>
-#include <list>
 
 class OrderBook {
     public:
@@ -38,10 +38,40 @@ class OrderBook {
         std::vector<PriceLevelSnapshot> bid_depth(std::size_t levels) const;
         std::vector<PriceLevelSnapshot> ask_depth(std::size_t levels) const;
 
+        //how many orders are resting in the book
+        std::size_t resting_order_count() const;
+
     private:
         //the order book is represented as two separate maps: one for asks and one for bids.
         AskBook asks_;
         BidBook bids_;
+
+        //every resting order lives in this one vector rather than in a node of its own. the queue at a
+        //price level is threaded through it by index, which keeps the orders that are matched one after
+        //another close together in memory and takes an allocation off the path of every submit
+        struct OrderNode {
+            Order order;
+            std::size_t previous = no_order;
+            std::size_t next = no_order;
+        };
+
+        std::vector<OrderNode> arena_;
+
+        //slots left behind by orders that have traded or been cancelled, handed out again before the
+        //arena is grown
+        std::vector<std::size_t> free_slots_;
+
+        //takes a slot for an order, reusing a freed one where there is one to reuse
+        std::size_t acquire_slot(const Order& order);
+
+        //hands a slot back for reuse
+        void release_slot(std::size_t slot);
+
+        //adds an order to the back of a level's queue, which is what gives arrival order priority
+        void link_into_level(PriceLevel& level, std::size_t slot);
+
+        //takes an order out of its level's queue, from anywhere in it
+        void unlink_from_level(PriceLevel& level, std::size_t slot);
 
         //match_buy and match_sell are private member functions that handle the matching of incoming orders with existing orders in the order book.
         std::vector<Trade> match_buy(Order& incoming);
@@ -52,7 +82,7 @@ class OrderBook {
         struct OrderLocation {
             Side side;
             Price price;
-            std::list<Order>::iterator order_iterator;
+            std::size_t slot;
         };
 
         std::unordered_map<OrderId, OrderLocation> order_index_;
