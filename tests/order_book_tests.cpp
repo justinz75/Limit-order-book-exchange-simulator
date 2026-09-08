@@ -1,7 +1,10 @@
 #include "order_book.hpp"
+#include "order_index.hpp"
 #include "test_runner.hpp"
 
 #include <iostream>
+#include <map>
+#include <random>
 
 int main() {
     TestRunner runner;
@@ -152,6 +155,85 @@ int main() {
     runner.check(limit_trades.empty(), "a limit order still refuses to pay more than its own price");
     runner.check(market_order_book.best_bid().has_value() && market_order_book.best_bid().value() == 105,
                  "and rests instead of crossing");
+
+    //test 8: the order id index is a hand written hash table, so it is checked against a std::map asked
+    //to do exactly the same work. the ids are drawn from a range far smaller than the number of steps so
+    //that the same id is inserted, erased and reinserted constantly, which is what shakes out mistakes in
+    //the removal path
+    OrderIndex<std::size_t> index;
+    std::map<OrderId, std::size_t> reference;
+    std::mt19937_64 rng(12345);
+    std::uniform_int_distribution<OrderId> id_distribution(1, 4000);
+
+    bool erase_agreed = true;
+    bool find_agreed = true;
+
+    for (std::size_t step = 0; step < 200000; ++step) {
+        OrderId id = id_distribution(rng);
+
+        if (step % 3 == 0) {
+            bool erased = index.erase(id);
+            bool reference_erased = reference.erase(id) > 0;
+
+            if (erased != reference_erased) {
+                erase_agreed = false;
+            }
+        } else {
+            index.insert(id, step);
+            reference[id] = step;
+        }
+
+        const std::size_t* found = index.find(id);
+        auto reference_found = reference.find(id);
+
+        if ((found == nullptr) != (reference_found == reference.end())) {
+            find_agreed = false;
+        } else if (found != nullptr && *found != reference_found->second) {
+            find_agreed = false;
+        }
+    }
+
+    runner.check(erase_agreed, "the index agrees with a map about whether there was anything to erase");
+    runner.check(find_agreed, "the index agrees with a map about what is present after every step");
+    runner.check(index.size() == reference.size(), "and holds the same number of entries at the end");
+
+    bool every_entry_found = true;
+    for (const auto& entry : reference) {
+        const std::size_t* found = index.find(entry.first);
+
+        if (found == nullptr || *found != entry.second) {
+            every_entry_found = false;
+        }
+    }
+
+    runner.check(every_entry_found, "and every surviving entry is still reachable with the right value");
+
+    //ids that were never inserted must not be found, however full the table is
+    bool absent_stay_absent = true;
+    for (OrderId id = 100000; id < 100100; ++id) {
+        if (index.find(id) != nullptr) {
+            absent_stay_absent = false;
+        }
+    }
+
+    runner.check(absent_stay_absent, "an id that was never inserted is not found");
+    runner.check(!index.erase(999999), "and erasing one that is not there reports that there was nothing");
+
+    //emptying the table completely should leave nothing behind that a lookup can trip over
+    for (const auto& entry : reference) {
+        index.erase(entry.first);
+    }
+
+    runner.check(index.size() == 0, "erasing everything leaves the index empty");
+
+    bool empty_finds_nothing = true;
+    for (OrderId id = 1; id <= 4000; ++id) {
+        if (index.find(id) != nullptr) {
+            empty_finds_nothing = false;
+        }
+    }
+
+    runner.check(empty_finds_nothing, "and nothing can be found in it afterwards");
 
     return runner.summary("order book tests");
 }

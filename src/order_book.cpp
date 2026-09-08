@@ -290,26 +290,26 @@ void OrderBook::add_to_book(const Order& order) {
         link_into_level(asks_[order.price], slot);
     }
 
-    order_index_[order.id] = {
+    order_index_.insert(order.id, OrderLocation{
         order.side,
         order.price,
         slot
-    };
+    });
 }
 
 bool OrderBook::cancel_order(OrderId order_id) {
-    auto index_it = order_index_.find(order_id);
-    if (index_it == order_index_.end()) {
+    const OrderLocation* found = order_index_.find(order_id);
+    if (found == nullptr) {
         return false;
     }
-    OrderLocation location = index_it->second;
+    OrderLocation location = *found;
     if (location.side == Side::Buy) {
         auto level_it = bids_.find(location.price);
 
         //the index should never point at a price the book has forgotten, but not checking would mean
         //walking off the end of the map if it ever did
         if (level_it == bids_.end()) {
-            order_index_.erase(index_it);
+            order_index_.erase(order_id);
             return false;
         }
 
@@ -322,7 +322,7 @@ bool OrderBook::cancel_order(OrderId order_id) {
         auto level_it = asks_.find(location.price);
 
         if (level_it == asks_.end()) {
-            order_index_.erase(index_it);
+            order_index_.erase(order_id);
             return false;
         }
 
@@ -332,7 +332,7 @@ bool OrderBook::cancel_order(OrderId order_id) {
         }
     }
     release_slot(location.slot);
-    order_index_.erase(index_it);
+    order_index_.erase(order_id);
 
     return true;
 }

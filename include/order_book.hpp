@@ -3,13 +3,13 @@
 #include "order.hpp"
 #include "trade.hpp"
 #include "price.hpp"
+#include "order_index.hpp"
 
 #include <cstddef>
 #include <map>
 #include <vector>
 #include <optional>
 
-#include <unordered_map>
 
 class OrderBook {
     public:
@@ -85,5 +85,5 @@ class OrderBook {
             std::size_t slot;
         };
 
-        std::unordered_map<OrderId, OrderLocation> order_index_;
+        OrderIndex<OrderLocation> order_index_;
 };
