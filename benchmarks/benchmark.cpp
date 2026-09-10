@@ -9,6 +9,12 @@
 #include <string>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+
 //how many orders each measurement pushes through the book
 constexpr std::size_t order_count = 1000000;
 
@@ -106,6 +112,54 @@ void report(const std::string& name, std::size_t operations, std::vector<double>
               << "   (" << fastest << " to " << slowest << ")\n";
 }
 
+//std::chrono::steady_clock on windows ticks every 100 ns, which is about as long as a cancel takes, so
+//timing one operation with it would read as nothing, one tick or two. the processor's timestamp counter
+//ticks a few billion times a second instead. it has to be turned into time using a rate measured
+//against the steady clock, and that relies on it ticking at a constant rate whatever the processor's
+//clock speed is doing, which is true of any processor from roughly the last fifteen years
+std::uint64_t cycles_now() {
+    //the fences stop out of order execution from taking the reading early or letting the work being
+    //timed drift outside it
+    _mm_lfence();
+    std::uint64_t cycles = __rdtsc();
+    _mm_lfence();
+    return cycles;
+}
+
+//how many counter ticks make a nanosecond, found by counting them over a stretch long enough that the
+//steady clock's coarse ticks stop mattering
+double cycles_per_nanosecond() {
+    auto wall_start = std::chrono::steady_clock::now();
+    std::uint64_t cycles_start = cycles_now();
+
+    while (std::chrono::steady_clock::now() - wall_start < std::chrono::milliseconds(250)) {
+    }
+
+    std::uint64_t cycles_end = cycles_now();
+    auto wall_end = std::chrono::steady_clock::now();
+
+    double nanoseconds = std::chrono::duration<double, std::nano>(wall_end - wall_start).count();
+    return static_cast<double>(cycles_end - cycles_start) / nanoseconds;
+}
+
+//prints the percentiles of a set of individually timed operations
+void report_latency(const std::string& name, std::vector<std::uint64_t>& cycles, double per_nanosecond) {
+    std::sort(cycles.begin(), cycles.end());
+
+    auto at = [&](double fraction) {
+        std::size_t index = static_cast<std::size_t>(fraction * static_cast<double>(cycles.size() - 1));
+        return static_cast<double>(cycles[index]) / per_nanosecond;
+    };
+
+    std::cout << std::left << std::setw(20) << name
+              << std::right << std::fixed << std::setprecision(0)
+              << std::setw(9) << at(0.50)
+              << std::setw(9) << at(0.90)
+              << std::setw(9) << at(0.99)
+              << std::setw(10) << at(0.999)
+              << std::setw(12) << at(1.0) << "\n";
+}
+
 int main() {
     std::cout << "Order book benchmark\n";
     std::cout << "--------------------\n";
@@ -197,6 +251,73 @@ int main() {
 
     report("best bid", order_count, quote_timings);
     report("bid depth, 5 deep", depth_iterations, depth_timings);
+
+    //latency, which is where the tail lives. every operation is timed on its own here, so that the slow
+    //ones show up instead of being averaged away by the million fast ones around them
+    std::cout << "\nLatency per operation, each timed on its own\n";
+    std::cout << "--------------------------------------------\n";
+
+    double per_nanosecond = cycles_per_nanosecond();
+
+    //the cost of reading the counter twice with nothing in between. it is inside every figure below,
+    //and is printed rather than subtracted, since taking it off can push the fastest readings below zero
+    std::vector<std::uint64_t> overhead;
+    overhead.reserve(100000);
+
+    for (int i = 0; i < 100000; ++i) {
+        std::uint64_t start = cycles_now();
+        std::uint64_t end = cycles_now();
+        overhead.push_back(end - start);
+    }
+
+    std::sort(overhead.begin(), overhead.end());
+
+    std::cout << "Counter rate: " << std::setprecision(2) << per_nanosecond << " ticks per ns\n";
+    std::cout << "Reading the counter costs about " << std::setprecision(0)
+              << (static_cast<double>(overhead[overhead.size() / 2]) / per_nanosecond)
+              << " ns, and that is included in every figure below\n\n";
+
+    std::cout << std::left << std::setw(20) << "" << std::right
+              << std::setw(9) << "p50"
+              << std::setw(9) << "p90"
+              << std::setw(9) << "p99"
+              << std::setw(10) << "p99.9"
+              << std::setw(12) << "max" << "   (ns)\n";
+
+    //the vectors holding the timings are sized up front, so that growing them is not what gets measured
+    std::vector<std::uint64_t> submit_cycles;
+    submit_cycles.reserve(order_count);
+
+    {
+        OrderBook book;
+
+        for (const Order& order : orders) {
+            std::uint64_t start = cycles_now();
+            book.submit(order);
+            std::uint64_t end = cycles_now();
+            submit_cycles.push_back(end - start);
+        }
+    }
+
+    report_latency("submit", submit_cycles, per_nanosecond);
+
+    std::vector<std::uint64_t> cancel_cycles;
+    cancel_cycles.reserve(order_count);
+
+    {
+        OrderBook book;
+        std::vector<OrderId> ids;
+        fill_with_resting_orders(book, ids);
+
+        for (OrderId id : ids) {
+            std::uint64_t start = cycles_now();
+            book.cancel_order(id);
+            std::uint64_t end = cycles_now();
+            cancel_cycles.push_back(end - start);
+        }
+    }
+
+    report_latency("cancel", cancel_cycles, per_nanosecond);
 
     //printed so that none of the work above can be optimised away as unused
     std::cout << "\nTrades made: " << trades_made

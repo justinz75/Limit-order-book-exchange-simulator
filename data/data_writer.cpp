@@ -4,9 +4,12 @@
 constexpr std::size_t depth_levels = 5;
 
 DataWriter::DataWriter(const std::string& filename)
-    : file_(filename) {
+    : enabled_(!filename.empty()) {
 
-    write_header();
+    if (enabled_) {
+        file_.open(filename);
+        write_header();
+    }
 }
 
 DataWriter::~DataWriter() {
@@ -17,6 +20,9 @@ DataWriter::~DataWriter() {
 
 //writes the header row to the output file
 void DataWriter::write_header() {
+    if (!enabled_) {
+        return;
+    }
 
     file_
         << "event,"
@@ -40,6 +46,9 @@ void DataWriter::write_event(
     const Order& order,
     const OrderBook& order_book
 ) {
+    if (!enabled_) {
+        return;
+    }
 
     file_ << event_number << ",";
     file_ << "NEW_ORDER" << ",";
@@ -120,6 +129,9 @@ void DataWriter::write_trade(
     std::size_t event_number,
     const Trade& trade
 ) {
+    if (!enabled_) {
+        return;
+    }
 
     file_ << event_number << ",";
     file_ << "TRADE" << ",";

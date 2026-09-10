@@ -24,6 +24,10 @@ target_link_libraries(simulation PUBLIC order_book)
 add_executable(simulator src/simulator_main.cpp)
 target_link_libraries(simulator PRIVATE simulation)
 
+#runs the market maker and informed trader experiments, which analysis/experiments.py then reads
+add_executable(experiments src/experiments_main.cpp)
+target_link_libraries(experiments PRIVATE simulation)
+
 add_executable(benchmark benchmarks/benchmark.cpp)
 target_link_libraries(benchmark PRIVATE order_book)
 

@@ -61,6 +61,17 @@ python analysis/analysis.py
 
 which needs pandas and matplotlib, and writes into `analysis/plots`.
 
+The informed trader and market maker experiments are a separate program, since they run the simulation
+sixty times over and write a good deal more data:
+
+```
+./build/experiments
+python analysis/experiments.py
+```
+
+The first writes into `data/experiments`, which is left out of the repository because it takes about a
+minute to regenerate. The second reads it and writes its plots into `analysis/plots`, which are kept.
+
 ## How the book is put together
 
 Each side is a `std::map` from price to a list of the orders resting at that price.
@@ -114,18 +125,24 @@ new price now crosses.
 
 ## Performance
 
-`benchmarks/benchmark.cpp` puts a million orders through the book and times each operation on its own,
-five times over, reporting the median with the range beside it. A single timing moves around by more
-than the differences that are worth measuring, which is worth knowing before reading anything into one.
+`benchmarks/benchmark.cpp` puts a million orders through the book and measures it two ways. The first
+times each kind of operation a million at a time, five times over, and reports the median with the range
+beside it. The second times every operation on its own, so that the slow ones show up instead of being
+averaged away. A single timing moves around by more than the differences worth measuring, which is worth
+knowing before reading anything into one.
 
 Measured on an AMD Ryzen 7 7435HS with MSVC 19.44. Everything quoted below was built with the same flags,
-`/MD /O2 /Ob2 /DNDEBUG`, for reasons that the last part of this section explains.
+`/MD /O2 /Ob2 /DNDEBUG`, for reasons the section on a measurement mistake explains.
 
 ```
-submit                    3.44 M ops/s    290.7 ns/op   (281.9 to 294.8)
-cancel                    8.54 M ops/s    117.0 ns/op   ( 99.1 to 141.4)
-best bid                355.30 M ops/s      2.8 ns/op   (  2.8 to   2.8)
-bid depth, 5 deep         3.31 M ops/s    301.9 ns/op   (301.8 to 303.8)
+submit                    3.40 M ops/s    294.5 ns/op   (281.6 to 308.5)
+cancel                    9.76 M ops/s    102.4 ns/op   (99.8 to 102.6)
+best bid                383.74 M ops/s      2.6 ns/op   (2.5 to 2.7)
+bid depth, 5 deep         3.29 M ops/s    303.5 ns/op   (303.1 to 338.3)
+
+                          p50      p90      p99     p99.9         max   (ns)
+submit                    281      421      852      4669    42931224
+cancel                    250      291      481       771     1764349
 ```
 
 23% of the submitted orders crossed and had to be matched; the rest came to rest in the book.
@@ -141,6 +158,50 @@ workload this cache bound looked like it should cost something. Interleaving fiv
 submit at 292 ns before and 295 ns after, and cancel at 105 ns and 108 ns, so whatever it costs is
 smaller than the machine's own variation. Grouping the three small enums together would bring `Order`
 back to 48 bytes, but on this evidence there is nothing there to win yet.
+
+### One operation at a time
+
+Timing a single operation needs a finer clock than the standard library offers on Windows, where
+`std::chrono::steady_clock` ticks every 100 ns. That is about as long as a cancel takes, so every cancel
+would come out as nothing, one tick or two. The per operation figures use the processor's timestamp
+counter instead, which on this machine ticks 3.09 times a nanosecond, turned into time using a rate
+measured against the steady clock over a quarter of a second. The reads are fenced so the processor
+cannot move the work being timed outside them, and a pair of them costs about 30 ns. That is left in the
+figures rather than subtracted, since taking it off can push the fastest readings below zero.
+
+Two things stand out.
+
+The first is that a cancel takes 102 ns in the throughput figures and 250 ns at the median here, and 30 ns
+of timer does not come close to explaining the gap. What does is that a loop of cancels overlaps them:
+while one is waiting on memory, the processor is already fetching for the next. Timing each one on its own
+forbids that. Running the same million cancels three ways shows how much of the gap is which:
+
+| a million cancels | ns each |
+|---|---|
+| straight through, as the throughput figures do | 99 |
+| with a fence before and after each one, and no timing | 178 |
+| with the fences and the counter reads, as the latency figures do | 230 |
+
+So a cancel on its own costs about 180 ns of real work, and the loop hides nearly half of it. Neither
+number is wrong. They answer different questions, and an engine handling orders one at a time as they
+arrive is asking the second one.
+
+The second is the max. A submit whose median is 281 ns took 43 ms at worst in the run above. A separate
+run that printed every submit slower than half a millisecond, along with how many orders were resting at
+the time, accounts for every one of the fourteen it found:
+
+- six landed at exactly 22938, 45876, 91751, 183501, 367002 and 734004 resting orders, which are seven
+  tenths of a power of two, rounded up. That is the order index reaching its load factor and rehashing
+  everything into a table twice the size. Each took almost exactly twice as long as the one before, up to
+  31 ms for the last.
+- the other eight landed at 40966, 61448, 92171, 138256, 207383, 311074, 466610 and 699914, which are one
+  more than the capacities MSVC's `std::vector` grows through at one and a half times a step. That is the
+  arena running out of room and copying every order it holds into a bigger one.
+
+Sending the same orders a second time, into a book that has already grown and never gives the room back,
+brings the worst case down from 31 ms to 0.24 ms. Amortised constant time is a promise about the average,
+and says nothing about the worst single call, which is the one an order is actually waiting on. A real
+engine would size both up front.
 
 ### How it got there
 
@@ -190,14 +251,15 @@ change I happened to be making at the time, which is exactly when a result deser
 
 ### What is left
 
-290 ns for a submit is still not fast. The index is better but it is not free: with three quarters of a
-million orders resting, the table is tens of megabytes, so an insert lands on a cache line nothing has
-touched recently and pays for the miss however the table is laid out.
+About 290 ns for a submit is still not fast. The index is better than it was but it is not free: with
+three quarters of a million orders resting the table is tens of megabytes, so an insert lands on a cache
+line nothing has touched recently and pays for the miss however the table is laid out.
 
-The remaining standard step is to lean on prices being bounded and swap the level map for a flat array
-indexed by tick, which turns a level lookup into an array index and puts neighbouring levels next to
-each other in memory. That is not done, and on the evidence above I would want to measure it before
-assuming it helps.
+The cheapest remaining win is the one the latency figures point at, which is sizing the index and the
+arena up front, and that would take out the millisecond outliers entirely. The standard step after that
+is to lean on prices being bounded and swap the level map for a flat array indexed by tick, so that a
+level lookup becomes an array index and neighbouring levels sit next to each other in memory. Neither is
+done, and on the evidence above I would measure either one before assuming it helps.
 
 ## The simulation
 
@@ -236,15 +298,115 @@ The imbalance sitting near zero and the two sides of the depth plot tracking eac
 would expect from a model with no directional pressure in it, since buys and sells arrive with equal
 probability. The mid price wanders because the reference price does.
 
+## Informed traders and a market maker
+
+In the original model nobody knows more than anybody else: every trader prices off the true value as it
+stands right now. `src/experiments_main.cpp` adds two kinds of trader on top of that and runs a set of
+experiments with them. Each is repeated over ten seeds, because one run of a market maker is one draw of
+its P&L and cannot say much on its own, and they are built in pairs that differ in exactly one thing, so
+that any difference between the two can be put down to that one thing.
+
+The ordinary traders are given a view of the value that is 300 events out of date. The price still moves,
+because their view moves, but it lags, and the lag is something to trade on.
+
+**Informed traders** can see the value as it is now. When the book has drifted more than half a tick away
+from it they send an immediate or cancel order for whatever is mispriced, and otherwise they do nothing.
+
+**The market maker** quotes at the touch, rounding its bid down and its offer up so the two sit the same
+distance either side of the mid. It keeps each quote a tick short of the other side so that it only ever
+rests, stops quoting a side once its position would pass 200, and leans both quotes against its position:
+a maker that is long lowers its bid and its offer, so it buys less and sells more and drifts back toward
+flat.
+
+### Two versions that did not work
+
+The first version anchored the ordinary traders to the mid instead of to a lagged value. That left the
+book anchored to nothing but itself, and the price did not move once in 100,000 events, because orders
+placed at the mid refilled the touch faster than anything took from it. The imbalance analysis below still
+found a correlation of -0.55 in it, with a t statistic of -11, conjured out of the handful of price moves
+among 60,000 rows. That is why the analysis now counts the moves in every sample and will not report a
+correlation from fewer than thirty.
+
+The first market maker took its quotes down and put them straight back up every event. Each time, that
+sent it to the back of the queue behind every order that had arrived at its price in the meantime, and it
+was filled a handful of times in 100,000 events. Leaving a quote alone when the price it wants has not
+changed took it to around 2,400 fills a run.
+
+### Does the imbalance in the book predict the next move?
+
+The imbalance is the bid quantity less the ask quantity over the top five levels, divided by the two
+together. The table is its correlation with the move in the mid over the orders that follow, taken over
+stretches that do not overlap, so the t statistics are not inflated by neighbouring samples sharing most
+of their path:
+
+| | next order | 10 orders | 50 orders | 200 orders |
+|---|---|---|---|---|
+| original model | -0.000 | -0.023 | -0.086 | -0.100 |
+| ordinary traders on a 300 event lag | -0.001 | -0.038 | -0.096 | -0.147 |
+| plus informed traders | 0.009 | -0.011 | -0.045 | 0.008 |
+| plus informed traders looking five times as often | 0.023 | 0.038 | 0.086 | 0.085 |
+
+I expected the textbook answer: that a book heavy on the bid side comes before a rise, and that informed
+traders would be what put it there. In the main informed run there is essentially none of that, and only
+the next order figure clears a t of 2, just. The explanation I had was that they are too small a part of
+the flow to show up in the imbalance at all, since they look at the book on one event in ten but find
+something to trade on only about one in eighty. That could be tested, so a run with them looking five
+times as often was added, which works out at a little over twice as many trades, because the more they
+trade the less often the book is wrong. There the relationship turns positive at every horizon, with t
+statistics of 5.7, 3.0 and 3.1 at one, ten and fifty orders. So informed flow does make the imbalance
+predictive, and how predictive depends on how much of it there is.
+
+The effects are small all the same. A correlation of 0.086 means the imbalance accounts for less than one
+percent of how far the price moves over the next fifty orders. `analysis/plots/imbalance_signal.png` shows
+the same thing split into ten groups by imbalance.
+
+The weak negative relationship in the two runs with nobody informed, around -0.1 with t near -3, is
+something I do not have a tested explanation for.
+
+### The market maker
+
+| | fills | P&L | spread earned | lost on position | position rms |
+|---|---|---|---|---|---|
+| no informed traders | 2448 ± 379 | 1790 ± 351 | 8291 ± 1581 | -6501 ± 1319 | 5.0 ± 0.1 |
+| facing informed traders | 2172 ± 266 | 1411 ± 196 | 7214 ± 858 | -5802 ± 718 | 4.9 ± 0.1 |
+| facing informed traders, not leaning | 7548 ± 1243 | 6137 ± 1778 | 21392 ± 3829 | -15255 ± 2748 | 113.3 ± 6.7 |
+
+Money is in ticks times quantity, as the mean and standard deviation over ten seeds. Spread earned is what
+the maker made against the mid at the moment of each fill, which is what it would have kept had the price
+never moved afterwards, and lost on position is everything else.
+
+It makes money, and did on every one of the ten seeds in all three runs. But it hands most of the spread
+back: even with nobody informed in the market it loses 78% of what it earns to the price moving against it
+after it trades. The markouts in `analysis/plots/maker_markouts.png` show the same thing from the other
+side, at 0.52 ticks a unit at the moment of the fill and 0.12 a thousand events later.
+
+That surprised me. My reading of it is that the maker is the least informed trader in this market. It
+prices off the mid, and the mid is made of orders placed from a view of the value that is already 300
+events old, so the maker's picture lags even the ordinary traders', who each price off that view directly.
+When the view moves, the next orders to arrive cross the maker's stale quote, and the price then carries on
+the way they were going. That is an interpretation rather than something I have tested. The test would be
+to give the maker the same view the ordinary traders have and see whether its markouts stop decaying.
+
+Informed traders make it worse, but only a little, because at one trade in eighty they are a small part of
+the flow. P&L falls from 1790 to 1411, which is 21% and about three standard errors, and the markout a
+thousand events on falls from 0.119 to 0.090.
+
+Leaning on position is the clearest result of the lot. Without it the maker's position swings out to its
+limit and back again, as `analysis/plots/maker_position.png` shows, and with it the typical position is 4.9
+instead of 113. The maker that does not lean makes more money, 6137 against 1411, because it stays on both
+sides of the touch and is filled three and a half times as often. But its P&L varies far more from one seed
+to the next: mean over standard deviation is 7.2 for the maker that leans and 3.5 for the one that does
+not. Leaning gives up about three quarters of the return, and gets roughly twice the reliability for it.
+
 ## Layout
 
 ```
 include/        order, trade, price, order index and order book headers
-src/            the matching engine and the simulator
-data/           the csv writer, and the simulation output
+src/            the matching engine, the simulator and the experiments
+data/           the csv writer, the simulation output, and the experiment output once it has been run
 tests/          the two test suites and the small test helper they share
-benchmarks/     the throughput benchmark
-analysis/       the pandas script and the plots it writes
+benchmarks/     the throughput and latency benchmark
+analysis/       the pandas scripts and the plots they write
 ```
 
 ## What is not in here
@@ -252,10 +414,10 @@ analysis/       the pandas script and the plots it writes
 Nothing is threaded, and the book is not safe to touch from more than one thread. There is no wire
 protocol and no persistence, so the book exists only for as long as the process does.
 
-The simulated traders have no view of the market and no inventory, so there is no informed flow and no
-market making, which is the main reason the price path is a plain random walk rather than anything with
-structure to it. The simulator also only ever sends good till cancelled limit orders and market orders,
-so the immediate or cancel, fill or kill and modify paths are exercised by the tests rather than by the
-simulation. Self trade prevention is the exception, since it applies to every match: it fired 39 times
-over the run above, which is about one match in a thousand, as you would expect from a thousand traders
-picking orders at random.
+The main simulation has no informed flow and no market making. Those only exist in the experiments
+above, where the market maker is the only trader that holds a position and the informed traders are the
+only ones who know anything, and none of the traders learn from what they see. The main simulation only
+ever sends good till cancelled limit orders and market orders, the informed traders in the experiments
+send immediate or cancel ones, and fill or kill and modify are exercised only by the tests. Self trade
+prevention applies to every match: it fired 39 times over the run above, which is about one match in a
+thousand, as you would expect from a thousand traders picking orders at random.
