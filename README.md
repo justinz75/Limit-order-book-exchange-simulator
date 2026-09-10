@@ -46,10 +46,11 @@ Buy orders: 30025
 Sell orders: 30014
 Market orders: 6106
 Cancel attempts: 39961
-Successful cancels: 19705
-Trades: 38220
-Traded quantity: 211749
-Average trade price: 102.303
+Successful cancels: 19760
+Self trade cancellations: 39
+Trades: 38150
+Traded quantity: 211739
+Average trade price: 102.302
 ```
 
 Then the plots and statistics:
@@ -92,6 +93,25 @@ is skipped, so they keep taking levels until they are filled or the other side r
 whatever they cannot fill is thrown away instead of resting, since a market order has no price to rest
 at.
 
+On top of that an order carries a time in force, saying how long it is willing to wait. Good till
+cancelled is the default and behaves as above. Immediate or cancel takes whatever is there and gives up
+on the rest instead of resting. Fill or kill is the awkward one, because it has to trade all of its
+quantity or none of it, and that cannot be decided while matching: by the time you discover there was
+not enough, you have already traded some of it and cannot honestly take it back. So the book is asked
+what it could fill first, and the order is turned away before anything has changed if the answer is not
+enough.
+
+No trader trades with themselves. When an incoming order reaches a resting order under the same trader
+id, that resting order is pulled and the incoming one carries on to whatever was queued behind it. This
+is why the fill or kill check walks the individual orders rather than reading the running total each
+level keeps: quantity belonging to the incoming trader is not really available to it, and counting it
+would promise a fill that then could not happen.
+
+A resting order can also be modified. Reducing its quantity happens where it already sits, so it keeps
+its turn in the queue, which takes nothing away from anyone behind it. A new price, or more quantity,
+gives that place up and goes to the back, which is what a venue does, and can trade on the way in if the
+new price now crosses.
+
 ## Performance
 
 `benchmarks/benchmark.cpp` puts a million orders through the book and times each operation on its own,
@@ -109,6 +129,18 @@ bid depth, 5 deep         3.31 M ops/s    301.9 ns/op   (301.8 to 303.8)
 ```
 
 23% of the submitted orders crossed and had to be matched; the rest came to rest in the book.
+
+Two things about reading these. The bracketed ranges are the spread within one run of the benchmark and
+they understate how much the numbers move between runs: an early set of readings here came out near
+345 ns for submit purely because something else on the machine was busy at the time. And the depth
+figure is mostly not the lookup at all, since `bid_depth` returns a vector and a million calls is a
+million allocations, which is most of what is being timed.
+
+Adding the time in force field grew `Order` from 48 bytes to 56, and the arena node with it, which in a
+workload this cache bound looked like it should cost something. Interleaving five runs of each build put
+submit at 292 ns before and 295 ns after, and cancel at 105 ns and 108 ns, so whatever it costs is
+smaller than the machine's own variation. Grouping the three small enums together would bring `Order`
+back to 48 bytes, but on this evidence there is nothing there to win yet.
 
 ### How it got there
 
@@ -197,7 +229,7 @@ Over the 100,000 event run:
 | Mean spread | 1.04 ticks |
 | Mid price range | 96.5 to 107.5 |
 | Steady state depth | about 1,000 per side across the top 5 levels |
-| Mean book imbalance | -0.003 |
+| Mean book imbalance | -0.013 |
 | Market order share | 10.2% |
 
 The imbalance sitting near zero and the two sides of the depth plot tracking each other are what you
@@ -217,9 +249,13 @@ analysis/       the pandas script and the plots it writes
 
 ## What is not in here
 
-No order modification, and no time in force beyond the implicit behaviour of the two order types.
 Nothing is threaded, and the book is not safe to touch from more than one thread. There is no wire
-protocol, no persistence, and no self trade prevention, so nothing stops a trader matching against their
-own resting order. The simulated traders have no view of the market and no inventory, so there is no
-informed flow and no market making, which is the main reason the price path is a plain random walk
-rather than anything with structure to it.
+protocol and no persistence, so the book exists only for as long as the process does.
+
+The simulated traders have no view of the market and no inventory, so there is no informed flow and no
+market making, which is the main reason the price path is a plain random walk rather than anything with
+structure to it. The simulator also only ever sends good till cancelled limit orders and market orders,
+so the immediate or cancel, fill or kill and modify paths are exercised by the tests rather than by the
+simulation. Self trade prevention is the exception, since it applies to every match: it fired 39 times
+over the run above, which is about one match in a thousand, as you would expect from a thousand traders
+picking orders at random.

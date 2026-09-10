@@ -17,6 +17,10 @@ struct SimulationStats {
     std::size_t cancel_attempts = 0;
     std::size_t successful_cancels = 0;
 
+    //resting orders the book pulled because they would have traded against their own trader. these are
+    //not cancel attempts, since nobody asked for them
+    std::size_t self_trade_cancellations = 0;
+
     //statistics for trades executed during the simulation
     std::size_t trades = 0;
     Quantity traded_quantity = 0;

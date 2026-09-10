@@ -66,6 +66,34 @@ void OrderBook::unlink_from_level(PriceLevel& level, std::size_t slot) {
     arena_[slot].next = no_order;
 }
 
+std::size_t OrderBook::self_trade_cancellations() const {
+    return self_trade_cancellations_;
+}
+
+//takes a resting order out of the book without any trade having happened
+void OrderBook::remove_resting_order(Side side, Price price, std::size_t slot) {
+    OrderId removed_id = arena_[slot].order.id;
+
+    if (side == Side::Buy) {
+        auto level_it = bids_.find(price);
+        unlink_from_level(level_it->second, slot);
+
+        if (level_it->second.head == no_order) {
+            bids_.erase(level_it);
+        }
+    } else {
+        auto level_it = asks_.find(price);
+        unlink_from_level(level_it->second, slot);
+
+        if (level_it->second.head == no_order) {
+            asks_.erase(level_it);
+        }
+    }
+
+    release_slot(slot);
+    order_index_.erase(removed_id);
+}
+
 std::size_t OrderBook::resting_order_count() const {
     return arena_.size() - free_slots_.size();
 }
@@ -170,6 +198,15 @@ std::vector<Trade> OrderBook::match_buy(Order& incoming) {
         //match the incoming buy order with the resting sell order at the best ask price
         std::size_t resting_slot = best_ask_level.head;
         Order& resting_order = arena_[resting_slot].order;
+
+        //a trader is not allowed to trade with themselves, so their resting order is taken out of the
+        //way and the incoming order carries on to whatever was queued behind it
+        if (resting_order.trader_id == incoming.trader_id) {
+            self_trade_cancellations_++;
+            remove_resting_order(Side::Sell, best_ask_price, resting_slot);
+            continue;
+        }
+
         Quantity trade_quantity = std::min(incoming.remaining_quantity, resting_order.remaining_quantity);
         Price trade_price = resting_order.price;
 
@@ -222,6 +259,15 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
         //match the incoming sell order with the resting buy order at the best bid price
         std::size_t resting_slot = best_bid_level.head;
         Order& resting_order = arena_[resting_slot].order;
+
+        //a trader is not allowed to trade with themselves, so their resting order is taken out of the
+        //way and the incoming order carries on to whatever was queued behind it
+        if (resting_order.trader_id == incoming.trader_id) {
+            self_trade_cancellations_++;
+            remove_resting_order(Side::Buy, best_bid_price, resting_slot);
+            continue;
+        }
+
         Quantity trade_quantity = std::min(incoming.remaining_quantity, resting_order.remaining_quantity);
         Price trade_price = resting_order.price;
 
@@ -258,24 +304,128 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
     return trades;
 }
 
-//submits an order to the order book and returns a vector of trades that occurred as a result of the submission.
-//an unfilled limit order rests in the book, while whatever a market order could not fill is discarded
-std::vector<Trade> OrderBook::submit(Order order) {
-    std::vector<Trade> trades;
-    if (order.side == Side::Buy) {
-        trades = match_buy(order);
-        //if buy order is not fully filled, add the remaining quantity to the bid book
-        if (order.remaining_quantity > 0 && order.type == OrderType::Limit) {
-            add_to_book(order);
+//counts up what the book could give an incoming order right now. it walks the individual orders rather
+//than using the totals each level keeps, because quantity belonging to the incoming trader has to be
+//left out: it would be pulled instead of traded, so counting it would promise a fill that cannot happen
+Quantity OrderBook::fillable_quantity(const Order& incoming) const {
+    Quantity needed = incoming.remaining_quantity;
+    Quantity available = 0;
+
+    if (incoming.side == Side::Buy) {
+        for (const auto& price_level : asks_) {
+            if (incoming.type == OrderType::Limit && incoming.price < price_level.first) {
+                break;
+            }
+
+            for (std::size_t slot = price_level.second.head;
+                 slot != no_order;
+                 slot = arena_[slot].next) {
+                if (arena_[slot].order.trader_id == incoming.trader_id) {
+                    continue;
+                }
+
+                available += arena_[slot].order.remaining_quantity;
+
+                if (available >= needed) {
+                    return needed;
+                }
+            }
         }
-    } else if (order.side == Side::Sell) {
-        trades = match_sell(order);
-        //if sell order is not fully filled, add the remaining quantity to the ask book
-        if (order.remaining_quantity > 0 && order.type == OrderType::Limit) {
-            add_to_book(order);
+
+        return available;
+    }
+
+    for (const auto& price_level : bids_) {
+        if (incoming.type == OrderType::Limit && incoming.price > price_level.first) {
+            break;
+        }
+
+        for (std::size_t slot = price_level.second.head;
+             slot != no_order;
+             slot = arena_[slot].next) {
+            if (arena_[slot].order.trader_id == incoming.trader_id) {
+                continue;
+            }
+
+            available += arena_[slot].order.remaining_quantity;
+
+            if (available >= needed) {
+                return needed;
+            }
         }
     }
+
+    return available;
+}
+
+//submits an order to the order book and returns a vector of trades that occurred as a result of the submission.
+//whether anything is left resting afterwards depends on the order: a market order has no price to wait at,
+//and an immediate or cancel order is not willing to wait, so in both cases the remainder is discarded
+std::vector<Trade> OrderBook::submit(Order order) {
+    //a fill or kill order must not trade at all unless all of it can, so the book is asked what it could
+    //fill before anything has been changed
+    if (order.time_in_force == TimeInForce::FillOrKill &&
+        fillable_quantity(order) < order.remaining_quantity) {
+        return {};
+    }
+
+    std::vector<Trade> trades;
+
+    if (order.side == Side::Buy) {
+        trades = match_buy(order);
+    } else if (order.side == Side::Sell) {
+        trades = match_sell(order);
+    }
+
+    //only a good till cancelled limit order has anywhere to wait
+    if (order.remaining_quantity > 0 &&
+        order.type == OrderType::Limit &&
+        order.time_in_force == TimeInForce::GoodTillCancelled) {
+        add_to_book(order);
+    }
+
     return trades;
+}
+
+std::optional<std::vector<Trade>> OrderBook::modify_order(
+    OrderId order_id,
+    Price new_price,
+    Quantity new_quantity
+) {
+    const OrderLocation* found = order_index_.find(order_id);
+    if (found == nullptr) {
+        return std::nullopt;
+    }
+
+    OrderLocation location = *found;
+    Order existing = arena_[location.slot].order;
+
+    //dropping quantity at the same price is applied in place, so the order keeps its turn in the queue
+    if (new_price == existing.price &&
+        new_quantity > 0 &&
+        new_quantity < existing.remaining_quantity) {
+        auto level_it = (location.side == Side::Buy)
+            ? bids_.find(location.price)
+            : asks_.find(location.price);
+
+        level_it->second.total_quantity -= (existing.remaining_quantity - new_quantity);
+        arena_[location.slot].order.remaining_quantity = new_quantity;
+
+        return std::vector<Trade>{};
+    }
+
+    //anything else gives up its place, so the order leaves and comes back as though it were new
+    cancel_order(order_id);
+
+    //modifying down to nothing is just a cancel
+    if (new_quantity == 0) {
+        return std::vector<Trade>{};
+    }
+
+    existing.price = new_price;
+    existing.remaining_quantity = new_quantity;
+
+    return submit(existing);
 }
 
 //adds an order to the order book and updates the order index for quick lookup

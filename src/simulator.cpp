@@ -224,5 +224,9 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
             process_order(order, event_number, writer);
         }
     }
+
+    //the book counts these as it matches, so they are collected at the end rather than event by event
+    stats_.self_trade_cancellations = order_book_.self_trade_cancellations();
+
     return stats_;
 }

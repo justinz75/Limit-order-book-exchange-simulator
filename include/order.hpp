@@ -16,6 +16,18 @@ enum class OrderType {
     Market
 };
 
+//how long an order is willing to wait if it cannot trade the moment it arrives
+enum class TimeInForce {
+    //waits in the book until it trades or is cancelled
+    GoodTillCancelled,
+
+    //takes whatever is available immediately and gives up on the rest
+    ImmediateOrCancel,
+
+    //only trades if the whole quantity can be filled at once, and otherwise does not trade at all
+    FillOrKill
+};
+
 //'std::uint64_t' is an unsigned integer type that can hold values from 0 to 2^64 - 1, which is suitable for representing quantities in this context.
 //'std::int64_t' is a signed integer type that can hold values from -2^63 to 2^63 - 1, which is suitable for representing prices in this context.
 using OrderId = std::uint64_t;
@@ -33,4 +45,7 @@ struct Order {
     Price price;
     Quantity remaining_quantity;
     Timestamp timestamp;
+
+    //defaulted so that an order written without one behaves the way every order in this book used to
+    TimeInForce time_in_force = TimeInForce::GoodTillCancelled;
 };

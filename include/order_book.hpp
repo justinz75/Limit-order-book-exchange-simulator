@@ -26,6 +26,24 @@ class OrderBook {
 
         bool cancel_order(OrderId order_id);
 
+        //changes a resting order. reducing the quantity is done where the order already sits, so it keeps
+        //its place in the queue, since letting it keep its turn takes nothing away from anyone behind it.
+        //any other change, a new price or more quantity, goes to the back of the queue instead, which is
+        //what a real venue does, and can trade on the way in if the new price crosses. returns the trades
+        //that resulted, or nothing at all if there is no such order
+        std::optional<std::vector<Trade>> modify_order(
+            OrderId order_id,
+            Price new_price,
+            Quantity new_quantity
+        );
+
+        //how much of an order the book could fill right now, without changing anything. quantity resting
+        //under the same trader id does not count, since that would be prevented from trading
+        Quantity fillable_quantity(const Order& incoming) const;
+
+        //how many resting orders have been pulled because they would have traded against their owner
+        std::size_t self_trade_cancellations() const;
+
         Quantity quantity_at_price(Side side, Price price) const;
 
         //a single price level of the book: the price and the total quantity resting at it
@@ -76,6 +94,12 @@ class OrderBook {
         //match_buy and match_sell are private member functions that handle the matching of incoming orders with existing orders in the order book.
         std::vector<Trade> match_buy(Order& incoming);
         std::vector<Trade> match_sell(Order& incoming);
+
+        //drops a resting order without recording a trade, used when it would have traded against its
+        //own trader. the level is erased too if that emptied it
+        void remove_resting_order(Side side, Price price, std::size_t slot);
+
+        std::size_t self_trade_cancellations_ = 0;
 
         void add_to_book(const Order& order);
 

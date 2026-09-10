@@ -35,6 +35,9 @@ int main() {
     std::cout << "Successful cancels: "
               << stats.successful_cancels << '\n';
 
+    std::cout << "Self trade cancellations: "
+              << stats.self_trade_cancellations << '\n';
+
     std::cout << "Trades: "
               << stats.trades << '\n';
 

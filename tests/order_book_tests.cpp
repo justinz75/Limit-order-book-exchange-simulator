@@ -235,5 +235,147 @@ int main() {
 
     runner.check(empty_finds_nothing, "and nothing can be found in it afterwards");
 
+    //test 9: immediate or cancel takes what it can and does not wait around for the rest
+    OrderBook ioc_book;
+    ioc_book.submit(Order{30, 300, Side::Sell, OrderType::Limit, 110, 5, 10});
+
+    auto ioc_trades = ioc_book.submit(
+        Order{31, 301, Side::Buy, OrderType::Limit, 115, 10, 20, TimeInForce::ImmediateOrCancel}
+    );
+
+    runner.check(ioc_trades.size() == 1, "an immediate or cancel order trades what is available");
+    runner.check(ioc_trades.size() == 1 && ioc_trades[0].quantity == 5,
+                 "for as much as the book could give it");
+    runner.check(!ioc_book.best_bid().has_value(),
+                 "and the part it could not fill is discarded rather than resting");
+    runner.check(!ioc_book.best_ask().has_value(), "while the order it traded against is gone");
+
+    //test 10: fill or kill either trades in full or does not trade at all
+    OrderBook fok_book;
+    fok_book.submit(Order{40, 400, Side::Sell, OrderType::Limit, 110, 3, 10});
+    fok_book.submit(Order{41, 401, Side::Sell, OrderType::Limit, 112, 4, 20});
+
+    runner.check(fok_book.fillable_quantity(
+                     Order{42, 402, Side::Buy, OrderType::Limit, 112, 7, 30}
+                 ) == 7,
+                 "the book can report that it could fill an order across two levels");
+    runner.check(fok_book.fillable_quantity(
+                     Order{43, 403, Side::Buy, OrderType::Limit, 110, 7, 40}
+                 ) == 3,
+                 "and that a price that only reaches the first level would fill less");
+
+    auto rejected = fok_book.submit(
+        Order{44, 404, Side::Buy, OrderType::Limit, 110, 7, 50, TimeInForce::FillOrKill}
+    );
+
+    runner.check(rejected.empty(), "a fill or kill order that cannot be filled in full does not trade");
+    runner.check(fok_book.quantity_at_price(Side::Sell, 110) == 3,
+                 "and leaves the orders it would have traded against untouched");
+    runner.check(fok_book.quantity_at_price(Side::Sell, 112) == 4, "on both levels");
+    runner.check(!fok_book.best_bid().has_value(), "and does not rest either");
+
+    auto accepted = fok_book.submit(
+        Order{45, 405, Side::Buy, OrderType::Limit, 112, 7, 60, TimeInForce::FillOrKill}
+    );
+
+    runner.check(accepted.size() == 2, "one that can be filled in full sweeps both levels");
+    runner.check(!fok_book.best_ask().has_value(), "leaving the ask side empty");
+
+    //test 11: a trader is not allowed to trade with themselves
+    OrderBook stp_book;
+    stp_book.submit(Order{50, 500, Side::Sell, OrderType::Limit, 110, 5, 10});
+    stp_book.submit(Order{51, 600, Side::Sell, OrderType::Limit, 110, 5, 20});
+
+    auto stp_trades = stp_book.submit(Order{52, 500, Side::Buy, OrderType::Limit, 115, 8, 30});
+
+    runner.check(stp_book.self_trade_cancellations() == 1,
+                 "the resting order belonging to the incoming trader is pulled");
+    runner.check(stp_trades.size() == 1, "so only the other trader's order is traded against");
+    runner.check(stp_trades.size() == 1 && stp_trades[0].seller_id == 600,
+                 "and the trade is with that other trader");
+    runner.check(stp_trades.size() == 1 && stp_trades[0].quantity == 5,
+                 "for what that trader had resting");
+    runner.check(!stp_book.best_ask().has_value(), "the ask side is emptied between the two of them");
+    runner.check(stp_book.best_bid().has_value() && stp_book.best_bid().value() == 115,
+                 "and what the incoming order could not fill rests as a bid");
+    runner.check(stp_book.quantity_at_price(Side::Buy, 115) == 3, "for the quantity left over");
+
+    //a fill or kill order must not count its own resting quantity as something it could trade against,
+    //or it would be accepted and then find there was nothing to fill it after all
+    OrderBook stp_fok_book;
+    stp_fok_book.submit(Order{53, 700, Side::Sell, OrderType::Limit, 110, 5, 10});
+
+    runner.check(stp_fok_book.fillable_quantity(
+                     Order{54, 700, Side::Buy, OrderType::Limit, 115, 5, 20}
+                 ) == 0,
+                 "quantity resting under the same trader counts for nothing");
+
+    auto own_fok = stp_fok_book.submit(
+        Order{55, 700, Side::Buy, OrderType::Limit, 115, 5, 30, TimeInForce::FillOrKill}
+    );
+
+    runner.check(own_fok.empty(), "so a fill or kill order facing only its own quantity does not trade");
+    runner.check(stp_fok_book.quantity_at_price(Side::Sell, 110) == 5,
+                 "and its own resting order is left alone, since the order was rejected before matching");
+
+    //test 12: modifying a resting order
+    OrderBook modify_book;
+    modify_book.submit(Order{60, 800, Side::Buy, OrderType::Limit, 100, 10, 10});
+    modify_book.submit(Order{61, 801, Side::Buy, OrderType::Limit, 100, 10, 20});
+
+    auto reduced = modify_book.modify_order(60, 100, 4);
+
+    runner.check(reduced.has_value(), "a resting order can be modified");
+    runner.check(modify_book.quantity_at_price(Side::Buy, 100) == 14,
+                 "reducing the quantity takes it off the level total");
+
+    auto after_reduce = modify_book.submit(Order{62, 802, Side::Sell, OrderType::Limit, 100, 4, 30});
+
+    runner.check(after_reduce.size() == 1 && after_reduce[0].resting_order_id == 60,
+                 "and the reduced order keeps its place at the front of the queue");
+
+    //raising the quantity is a different matter, because the extra was never queued
+    OrderBook priority_book;
+    priority_book.submit(Order{70, 810, Side::Buy, OrderType::Limit, 100, 10, 10});
+    priority_book.submit(Order{71, 811, Side::Buy, OrderType::Limit, 100, 10, 20});
+    priority_book.modify_order(70, 100, 20);
+
+    auto after_raise = priority_book.submit(Order{72, 812, Side::Sell, OrderType::Limit, 100, 10, 30});
+
+    runner.check(after_raise.size() == 1 && after_raise[0].resting_order_id == 71,
+                 "raising the quantity sends the order to the back, so the one behind trades first");
+
+    //a new price also gives up the order's place, and moves it to the level it now belongs on
+    OrderBook reprice_book;
+    reprice_book.submit(Order{80, 820, Side::Buy, OrderType::Limit, 100, 10, 10});
+    reprice_book.modify_order(80, 105, 10);
+
+    runner.check(reprice_book.best_bid().has_value() && reprice_book.best_bid().value() == 105,
+                 "a repriced order shows up at its new price");
+    runner.check(reprice_book.quantity_at_price(Side::Buy, 100) == 0, "and not at the old one");
+
+    //and if the new price crosses, the modify trades on the way back in
+    OrderBook crossing_book;
+    crossing_book.submit(Order{90, 830, Side::Sell, OrderType::Limit, 110, 5, 10});
+    crossing_book.submit(Order{91, 831, Side::Buy, OrderType::Limit, 100, 5, 20});
+
+    auto crossed = crossing_book.modify_order(91, 110, 5);
+
+    runner.check(crossed.has_value() && crossed.value().size() == 1,
+                 "modifying a bid up onto the ask trades immediately");
+    runner.check(!crossing_book.best_ask().has_value() && !crossing_book.best_bid().has_value(),
+                 "and clears both sides");
+
+    //modifying down to nothing is a cancel
+    OrderBook zero_book;
+    zero_book.submit(Order{95, 840, Side::Buy, OrderType::Limit, 100, 10, 10});
+
+    runner.check(zero_book.modify_order(95, 100, 0).has_value(), "an order can be modified to nothing");
+    runner.check(!zero_book.best_bid().has_value(), "which removes it from the book");
+    runner.check(!zero_book.modify_order(95, 100, 5).has_value(),
+                 "and it cannot be modified again afterwards");
+    runner.check(!zero_book.modify_order(123456, 100, 5).has_value(),
+                 "modifying an order that was never submitted reports nothing");
+
     return runner.summary("order book tests");
 }
