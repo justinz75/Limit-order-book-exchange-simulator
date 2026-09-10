@@ -16,6 +16,14 @@ const std::vector<MakerSnapshot>& Simulator::maker_snapshots() const {
     return maker_snapshots_;
 }
 
+const std::vector<double>& Simulator::mid_history() const {
+    return mid_history_;
+}
+
+const std::vector<double>& Simulator::reference_history() const {
+    return reference_history_;
+}
+
 //the size of the random step the reference price takes each event
 constexpr double reference_step_size = 0.03;
 
@@ -36,7 +44,7 @@ void Simulator::step_reference_price() {
         reference_price_ = minimum_reference_price;
     }
 
-    if (config_.noise_view_lag > 0) {
+    if (config_.noise_view_lag > 0 || config_.record_history) {
         reference_history_.push_back(reference_price_);
     }
 }
@@ -47,21 +55,23 @@ Price Simulator::random_offset() {
     return static_cast<Price>(distribution(rng_));
 }
 
+//the reference as it stood noise_view_lag events ago, which with no lag is simply where it is now
+double Simulator::noise_view() const {
+    if (config_.noise_view_lag > 0 && !reference_history_.empty()) {
+        std::size_t back = std::min(config_.noise_view_lag, reference_history_.size() - 1);
+        return reference_history_[reference_history_.size() - 1 - back];
+    }
+
+    return reference_price_;
+}
+
 //a buy is placed at or below the anchor and a sell at or above it, so an order only trades when it is
 //priced aggressively enough to reach the other side
 Price Simulator::random_price(Side side) {
     Price offset = random_offset();
 
-    //an ordinary trader prices off the reference as it stood noise_view_lag events ago, which with no lag
-    //is simply where it is now
-    double view = reference_price_;
-
-    if (config_.noise_view_lag > 0 && !reference_history_.empty()) {
-        std::size_t back = std::min(config_.noise_view_lag, reference_history_.size() - 1);
-        view = reference_history_[reference_history_.size() - 1 - back];
-    }
-
-    Price reference = static_cast<Price>(std::llround(view));
+    //an ordinary trader prices off the value as it sees it, which is out of date by noise_view_lag events
+    Price reference = static_cast<Price>(std::llround(noise_view()));
 
     if (side == Side::Buy) {
         return reference - offset;
@@ -268,7 +278,11 @@ void Simulator::requote_market_maker() {
     auto best_bid = order_book_.best_bid();
     auto best_ask = order_book_.best_ask();
 
-    if (best_bid.has_value() && best_ask.has_value()) {
+    if (config_.maker_uses_noise_view) {
+        //rounded to the nearest half tick, which is the grid a mid always sits on, so that the maker
+        //quotes the same shape of market it would around a mid and only what it knows has changed
+        maker_center_ = std::round(noise_view() * 2.0) / 2.0;
+    } else if (best_bid.has_value() && best_ask.has_value()) {
         maker_center_ = (static_cast<double>(best_bid.value()) +
                          static_cast<double>(best_ask.value())) / 2.0;
     }
@@ -386,6 +400,41 @@ void Simulator::record_maker_fill(const Trade& trade, std::size_t event_number, 
     maker_fills_.push_back({event_number, maker_side, trade.price, trade.quantity, mid_before});
 }
 
+//a buy did well if the mid went up afterwards and a sell if it went down, so the move is signed from the
+//side the maker was on and weighted by how much it filled. fills too close to the end of the run for the
+//horizon to be reached are left out, rather than being measured against a mid that never came
+double Simulator::average_markout(std::size_t horizon) const {
+    double weighted = 0.0;
+    double units = 0.0;
+
+    for (const MakerFill& fill : maker_fills_) {
+        double later = fill.mid_before;
+
+        if (horizon > 0) {
+            //the mid at the end of event e is kept at index e - 1
+            std::size_t index = fill.event + horizon - 1;
+
+            if (index >= mid_history_.size()) {
+                continue;
+            }
+
+            later = mid_history_[index];
+        }
+
+        double sign = (fill.side == Side::Buy) ? 1.0 : -1.0;
+        double quantity = static_cast<double>(fill.quantity);
+
+        weighted += sign * (later - static_cast<double>(fill.price)) * quantity;
+        units += quantity;
+    }
+
+    if (units == 0.0) {
+        return 0.0;
+    }
+
+    return weighted / units;
+}
+
 //cancels a randomly chosen known order and updates the statistics
 void Simulator::process_cancel() {
     //if there are no known order IDs, return early since there are no orders to cancel
@@ -451,6 +500,12 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
             process_informed(event_number, writer);
         }
 
+        //the mid at the end of the event, carried over from the last one if one side of the book is empty
+        if (config_.record_history) {
+            double fallback = mid_history_.empty() ? reference_price_ : mid_history_.back();
+            mid_history_.push_back(order_book_.mid_price().value_or(fallback));
+        }
+
         if (config_.market_maker) {
             double inventory = static_cast<double>(maker_inventory_);
             inventory_square_sum_ += inventory * inventory;
@@ -481,6 +536,14 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
         stats_.maker_inventory_pnl = stats_.maker_pnl - stats_.maker_edge;
         stats_.maker_inventory_rms =
             std::sqrt(inventory_square_sum_ / static_cast<double>(number_of_events));
+
+        if (config_.record_history) {
+            stats_.maker_markout_0 = average_markout(0);
+            stats_.maker_markout_1 = average_markout(1);
+            stats_.maker_markout_10 = average_markout(10);
+            stats_.maker_markout_100 = average_markout(100);
+            stats_.maker_markout_1000 = average_markout(1000);
+        }
     }
 
     return stats_;

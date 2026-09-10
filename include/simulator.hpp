@@ -52,6 +52,15 @@ struct SimulationConfig {
 
     //how often, in events, the maker's position and value are written down for plotting
     std::size_t maker_log_interval = 10;
+
+    //whether the maker centres its quotes on the same out of date view of the value that the ordinary
+    //traders price from, instead of on the mid. it is here to test why the maker gives back so much of
+    //its spread
+    bool maker_uses_noise_view = false;
+
+    //whether to keep the mid and the reference price at the end of every event. the experiments need them
+    //for markouts and for comparing where the book is with where the value is, and nothing else does
+    bool record_history = false;
 };
 
 //one fill the market maker received
@@ -120,6 +129,15 @@ struct SimulationStats {
     //the traders it fills know something it does not, this is where that shows up
     double maker_inventory_pnl = 0.0;
 
+    //the average markout per unit the maker filled, in ticks, a number of events after each fill. a buy
+    //counts as having done well if the mid went up afterwards and a sell if it went down. at zero it is
+    //the spread earned per unit. these need config.record_history, and stay at zero without it
+    double maker_markout_0 = 0.0;
+    double maker_markout_1 = 0.0;
+    double maker_markout_10 = 0.0;
+    double maker_markout_100 = 0.0;
+    double maker_markout_1000 = 0.0;
+
     double average_trade_price() const;
 };
 
@@ -136,6 +154,10 @@ class Simulator {
         //the maker's position and value, written down every config.maker_log_interval events
         const std::vector<MakerSnapshot>& maker_snapshots() const;
 
+        //the mid and the reference price at the end of every event, when config.record_history is set
+        const std::vector<double>& mid_history() const;
+        const std::vector<double>& reference_history() const;
+
     private:
         SimulationConfig config_;
 
@@ -149,9 +171,11 @@ class Simulator {
         //the price the market is currently trading around
         double reference_price_ = 100.0;
 
-        //the reference price at every event so far, kept only when the ordinary traders are working from
-        //an out of date view of it
+        //the reference price and the mid at the end of every event so far. the reference is kept when the
+        //ordinary traders are working from an out of date view of it or when history is being recorded,
+        //and the mid only when history is being recorded
         std::vector<double> reference_history_;
+        std::vector<double> mid_history_;
 
         std::vector<OrderId> known_order_ids_;
 
@@ -215,6 +239,12 @@ class Simulator {
 
         //updates the maker's position, cash and edge if it was on one side of this trade.
         void record_maker_fill(const Trade& trade, std::size_t event_number, double mid_before);
+
+        //the value as the ordinary traders see it, which is the reference price noise_view_lag events ago.
+        double noise_view() const;
+
+        //the quantity weighted average markout across the maker's fills, this many events after each.
+        double average_markout(std::size_t horizon) const;
 
         //returns the price for a limit order, placed a short way off the reference price on the
         //passive side for its direction.

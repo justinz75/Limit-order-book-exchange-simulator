@@ -377,5 +377,71 @@ int main() {
     runner.check(!zero_book.modify_order(123456, 100, 5).has_value(),
                  "modifying an order that was never submitted reports nothing");
 
+    //test 13: sizing the index and the book up front
+    OrderIndex<std::size_t> sized_index;
+    sized_index.reserve(10000);
+    std::size_t sized_capacity = sized_index.capacity();
+
+    for (OrderId id = 1; id <= 10000; ++id) {
+        sized_index.insert(id, static_cast<std::size_t>(id));
+    }
+
+    runner.check(sized_index.capacity() == sized_capacity,
+                 "an index sized up front does not grow while it fills to that size");
+
+    bool sized_all_found = true;
+    for (OrderId id = 1; id <= 10000; ++id) {
+        const std::size_t* found = sized_index.find(id);
+
+        if (found == nullptr || *found != id) {
+            sized_all_found = false;
+        }
+    }
+
+    runner.check(sized_all_found, "and every entry in it can still be found");
+
+    //sizing a table that already has entries in it has to keep all of them
+    OrderIndex<std::size_t> resized_index;
+    for (OrderId id = 1; id <= 100; ++id) {
+        resized_index.insert(id, static_cast<std::size_t>(id) * 7);
+    }
+    resized_index.reserve(100000);
+
+    bool all_kept = resized_index.size() == 100;
+    for (OrderId id = 1; id <= 100; ++id) {
+        const std::size_t* found = resized_index.find(id);
+
+        if (found == nullptr || *found != id * 7) {
+            all_kept = false;
+        }
+    }
+
+    runner.check(all_kept, "sizing an index that already holds entries keeps every one of them");
+
+    OrderBook sized_book;
+    sized_book.reserve(1000);
+
+    for (std::size_t i = 0; i < 1000; ++i) {
+        sized_book.submit(Order{static_cast<OrderId>(5000 + i), 900, Side::Buy, OrderType::Limit,
+                                100 - static_cast<Price>(i % 10), 1, static_cast<Timestamp>(i)});
+    }
+
+    runner.check(sized_book.resting_order_count() == 1000, "a book sized up front holds what is put in it");
+    runner.check(sized_book.cancel_order(5000) && !sized_book.cancel_order(5000),
+                 "and cancelling in it behaves as it always does");
+
+    //sizing a book that already has orders resting in it has to leave them exactly as they were
+    OrderBook resized_book;
+    resized_book.submit(Order{7000, 910, Side::Buy, OrderType::Limit, 100, 5, 1});
+    resized_book.submit(Order{7001, 911, Side::Sell, OrderType::Limit, 105, 3, 2});
+    resized_book.reserve(50000);
+
+    runner.check(resized_book.resting_order_count() == 2, "sizing a book with orders already in it keeps them");
+    runner.check(resized_book.quantity_at_price(Side::Buy, 100) == 5 &&
+                 resized_book.quantity_at_price(Side::Sell, 105) == 3,
+                 "at the prices and quantities they had");
+    runner.check(resized_book.cancel_order(7001) && resized_book.best_bid().value() == 100,
+                 "and they can still be cancelled and read afterwards");
+
     return runner.summary("order book tests");
 }

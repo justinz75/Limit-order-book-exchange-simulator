@@ -98,6 +98,26 @@ std::size_t OrderBook::resting_order_count() const {
     return arena_.size() - free_slots_.size();
 }
 
+//growing the arena and the free list to full size and straight back down writes to every page of them now,
+//while nothing is waiting on it. only reserving them would leave the operating system to hand each page over
+//the first time it is used, which happens in the middle of a submit. the sizes are only ever grown here, so a
+//book that already has orders in it keeps all of them
+void OrderBook::reserve(std::size_t orders) {
+    if (orders > arena_.size()) {
+        std::size_t in_use = arena_.size();
+        arena_.resize(orders);
+        arena_.resize(in_use);
+    }
+
+    if (orders > free_slots_.size()) {
+        std::size_t in_use = free_slots_.size();
+        free_slots_.resize(orders);
+        free_slots_.resize(in_use);
+    }
+
+    order_index_.reserve(orders);
+}
+
 std::optional<Price> OrderBook::best_bid() const {
     if (bids_.empty()) {
         return std::nullopt;

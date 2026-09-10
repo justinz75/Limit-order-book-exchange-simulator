@@ -59,6 +59,11 @@ class OrderBook {
         //how many orders are resting in the book
         std::size_t resting_order_count() const;
 
+        //sets aside room for this many resting orders, so the book never has to stop and grow while it
+        //fills up to that size. growing is where the worst latencies come from: the index rehashes every
+        //entry and the arena copies every order, all inside a single submit
+        void reserve(std::size_t orders);
+
     private:
         //the order book is represented as two separate maps: one for asks and one for bids.
         AskBook asks_;

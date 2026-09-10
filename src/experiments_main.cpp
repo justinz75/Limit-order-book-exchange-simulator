@@ -28,10 +28,16 @@ struct Experiment {
 //the experiments are built so that each one differs from another in a single thing, so that any
 //difference between those two can be put down to that one thing and not to something else that moved
 std::vector<Experiment> build_experiments() {
+    //the original model run again here, only so that its history is kept for comparing the book with the
+    //value. its events come out the same as data/simulation.csv
+    SimulationConfig original;
+    original.record_history = true;
+
     //ordinary traders working from a view of the value that is a few hundred events old. the price still
     //moves, because their view does, but it lags, and the lag is what informed traders trade on
     SimulationConfig noise_only;
     noise_only.noise_view_lag = 300;
+    noise_only.record_history = true;
 
     SimulationConfig informed = noise_only;
     informed.informed_percentage = 10;
@@ -44,18 +50,29 @@ std::vector<Experiment> build_experiments() {
     SimulationConfig maker = noise_only;
     maker.market_maker = true;
 
+    //the maker centred on the view the ordinary traders price from, rather than on the mid. this tests
+    //the explanation for why the maker gives back so much of its spread even with nobody informed
+    SimulationConfig maker_their_view = maker;
+    maker_their_view.maker_uses_noise_view = true;
+
     SimulationConfig maker_informed = maker;
     maker_informed.informed_percentage = 10;
+
+    SimulationConfig maker_informed_their_view = maker_informed;
+    maker_informed_their_view.maker_uses_noise_view = true;
 
     SimulationConfig maker_informed_no_skew = maker_informed;
     maker_informed_no_skew.maker_skew_per_unit = 0.0;
 
     return {
+        {"original", original},
         {"noise_only", noise_only},
         {"informed", informed},
         {"informed_heavy", informed_heavy},
         {"maker", maker},
+        {"maker_their_view", maker_their_view},
         {"maker_informed", maker_informed},
+        {"maker_informed_their_view", maker_informed_their_view},
         {"maker_informed_no_skew", maker_informed_no_skew}
     };
 }
@@ -83,6 +100,20 @@ void write_maker_fills(const std::string& path, const Simulator& simulator) {
              << fill.price << ","
              << fill.quantity << ","
              << fill.mid_before << "\n";
+    }
+}
+
+//the mid and the reference price at the end of every event, for comparing where the book is with where
+//the value is
+void write_history(const std::string& path, const Simulator& simulator) {
+    std::ofstream file(path);
+    file << "event,mid,reference\n";
+
+    const std::vector<double>& mids = simulator.mid_history();
+    const std::vector<double>& references = simulator.reference_history();
+
+    for (std::size_t i = 0; i < mids.size() && i < references.size(); ++i) {
+        file << (i + 1) << "," << mids[i] << "," << references[i] << "\n";
     }
 }
 
@@ -130,19 +161,21 @@ int main() {
     std::ofstream summary(output_directory + "/summary.csv");
     summary << "experiment,seed,trades,informed_orders,maker_fills,maker_volume,"
             << "maker_pnl,maker_edge,maker_inventory_pnl,maker_inventory_rms,"
-            << "maker_peak_inventory,maker_final_inventory\n";
+            << "maker_peak_inventory,maker_final_inventory,"
+            << "maker_markout_0,maker_markout_1,maker_markout_10,maker_markout_100,maker_markout_1000\n";
 
     std::cout << "Experiments: " << number_of_events << " events each, repeated over "
               << seeds_per_experiment << " seeds, shown as mean +- standard deviation\n\n";
 
-    std::cout << std::left << std::setw(24) << "experiment"
+    std::cout << std::left << std::setw(28) << "experiment"
               << std::right
               << std::setw(18) << "trades"
               << std::setw(18) << "informed orders"
               << std::setw(20) << "maker P&L"
               << std::setw(20) << "spread earned"
               << std::setw(22) << "lost on position"
-              << std::setw(16) << "position rms" << "\n";
+              << std::setw(16) << "position rms"
+              << std::setw(20) << "markout at 1000" << "\n";
 
     for (const Experiment& experiment : build_experiments()) {
         std::vector<double> trades;
@@ -151,6 +184,7 @@ int main() {
         std::vector<double> edge;
         std::vector<double> inventory_pnl;
         std::vector<double> inventory_rms;
+        std::vector<double> markout_1000;
 
         for (int i = 0; i < seeds_per_experiment; ++i) {
             std::uint64_t seed = first_seed + static_cast<std::uint64_t>(i);
@@ -166,9 +200,13 @@ int main() {
             Simulator simulator(seed, experiment.config);
             SimulationStats stats = simulator.run(number_of_events, writer);
 
-            if (i == 0 && experiment.config.market_maker) {
-                write_maker_log(output_directory + "/" + experiment.name + "_maker.csv", simulator);
-                write_maker_fills(output_directory + "/" + experiment.name + "_fills.csv", simulator);
+            if (i == 0) {
+                write_history(output_directory + "/" + experiment.name + "_history.csv", simulator);
+
+                if (experiment.config.market_maker) {
+                    write_maker_log(output_directory + "/" + experiment.name + "_maker.csv", simulator);
+                    write_maker_fills(output_directory + "/" + experiment.name + "_fills.csv", simulator);
+                }
             }
 
             summary << experiment.name << ","
@@ -182,7 +220,12 @@ int main() {
                     << stats.maker_inventory_pnl << ","
                     << stats.maker_inventory_rms << ","
                     << stats.maker_peak_inventory << ","
-                    << stats.maker_final_inventory << "\n";
+                    << stats.maker_final_inventory << ","
+                    << stats.maker_markout_0 << ","
+                    << stats.maker_markout_1 << ","
+                    << stats.maker_markout_10 << ","
+                    << stats.maker_markout_100 << ","
+                    << stats.maker_markout_1000 << "\n";
 
             trades.push_back(static_cast<double>(stats.trades));
             informed_orders.push_back(static_cast<double>(stats.informed_orders));
@@ -190,9 +233,10 @@ int main() {
             edge.push_back(stats.maker_edge);
             inventory_pnl.push_back(stats.maker_inventory_pnl);
             inventory_rms.push_back(stats.maker_inventory_rms);
+            markout_1000.push_back(stats.maker_markout_1000);
         }
 
-        std::cout << std::left << std::setw(24) << experiment.name
+        std::cout << std::left << std::setw(28) << experiment.name
                   << std::right
                   << std::setw(18) << format(summarise(trades), 0);
 
@@ -206,18 +250,20 @@ int main() {
             std::cout << std::setw(20) << format(summarise(pnl), 0)
                       << std::setw(20) << format(summarise(edge), 0)
                       << std::setw(22) << format(summarise(inventory_pnl), 0)
-                      << std::setw(16) << format(summarise(inventory_rms), 1);
+                      << std::setw(16) << format(summarise(inventory_rms), 1)
+                      << std::setw(20) << format(summarise(markout_1000), 3);
         } else {
             std::cout << std::setw(20) << "-"
                       << std::setw(20) << "-"
                       << std::setw(22) << "-"
-                      << std::setw(16) << "-";
+                      << std::setw(16) << "-"
+                      << std::setw(20) << "-";
         }
 
         std::cout << "\n";
     }
 
-    std::cout << "\nEvent files and the maker's fills and position are in " << output_directory
+    std::cout << "\nEvent files, histories and the maker's fills and position are in " << output_directory
               << ", for analysis/experiments.py to read\n";
 
     return 0;

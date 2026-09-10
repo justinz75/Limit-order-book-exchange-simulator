@@ -120,6 +120,20 @@ class OrderIndex {
             return slots_.size();
         }
 
+        //makes room for this many entries up front, so that filling the table up to that point never has
+        //to stop and rehash. anything already in it is kept
+        void reserve(std::size_t entries) {
+            std::size_t capacity = slots_.size();
+
+            while (entries * 10 >= capacity * maximum_load_percent) {
+                capacity *= 2;
+            }
+
+            if (capacity > slots_.size()) {
+                rebuild(capacity);
+            }
+        }
+
     private:
         struct Slot {
             OrderId id = 0;
@@ -151,11 +165,23 @@ class OrderIndex {
         }
 
         void grow() {
+            rebuild(slots_.size() * 2);
+        }
+
+        //moves every entry into a table of the given size, which has to be a power of two
+        void rebuild(std::size_t capacity) {
             std::vector<Slot> old_slots = std::move(slots_);
 
             slots_.clear();
-            slots_.resize(old_slots.size() * 2);
-            shift_--;
+            slots_.resize(capacity);
+
+            //the shift keeps as many of the top bits of the mixed hash as it takes to index the table
+            std::size_t bits = 0;
+            while ((static_cast<std::size_t>(1) << bits) < capacity) {
+                bits++;
+            }
+            shift_ = 64 - bits;
+
             occupied_ = 0;
 
             for (const Slot& slot : old_slots) {

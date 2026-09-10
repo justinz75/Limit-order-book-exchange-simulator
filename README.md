@@ -135,14 +135,18 @@ Measured on an AMD Ryzen 7 7435HS with MSVC 19.44. Everything quoted below was b
 `/MD /O2 /Ob2 /DNDEBUG`, for reasons the section on a measurement mistake explains.
 
 ```
-submit                    3.40 M ops/s    294.5 ns/op   (281.6 to 308.5)
-cancel                    9.76 M ops/s    102.4 ns/op   (99.8 to 102.6)
-best bid                383.74 M ops/s      2.6 ns/op   (2.5 to 2.7)
-bid depth, 5 deep         3.29 M ops/s    303.5 ns/op   (303.1 to 338.3)
+submit                    3.51 M ops/s    284.6 ns/op   (279.6 to 296.3)
+submit, sized first       5.00 M ops/s    200.0 ns/op   (198.4 to 216.0)
+cancel                    7.90 M ops/s    126.5 ns/op   (124.6 to 162.1)
+best bid                352.30 M ops/s      2.8 ns/op   (2.8 to 2.9)
+bid depth, 5 deep         3.23 M ops/s    309.9 ns/op   (303.7 to 317.5)
 
                           p50      p90      p99     p99.9         max   (ns)
-submit                    281      421      852      4669    42931224
-cancel                    250      291      481       771     1764349
+submit                    220      361      761      4448    32754997
+submit, sized first       230      341      691      1232     1575439
+submit, second half       230      351      741      3256    32754997
+sized, second half        240      351      741      1282     1575439
+cancel                    190      210      431       591     1254478
 ```
 
 23% of the submitted orders crossed and had to be matched; the rest came to rest in the book.
@@ -164,17 +168,22 @@ back to 48 bytes, but on this evidence there is nothing there to win yet.
 Timing a single operation needs a finer clock than the standard library offers on Windows, where
 `std::chrono::steady_clock` ticks every 100 ns. That is about as long as a cancel takes, so every cancel
 would come out as nothing, one tick or two. The per operation figures use the processor's timestamp
-counter instead, which on this machine ticks 3.09 times a nanosecond, turned into time using a rate
-measured against the steady clock over a quarter of a second. The reads are fenced so the processor
-cannot move the work being timed outside them, and a pair of them costs about 30 ns. That is left in the
-figures rather than subtracted, since taking it off can push the fastest readings below zero.
+counter instead, turned into time using a rate measured against the steady clock over a quarter of a
+second. The reads are fenced so the processor cannot move the work being timed outside them, and a pair of
+them costs about 30 ns. That is left in the figures rather than subtracted, since taking it off can push the
+fastest readings below zero.
+
+The counter is not as fine as its rate makes it sound. It runs at 3.09 ticks a nanosecond, but on this
+processor it only moves in steps of 31 ticks, about every 10 ns, so every figure here is to the nearest 10
+ns or so. Two figures one step apart are not different in any way worth reading into.
 
 Two things stand out.
 
-The first is that a cancel takes 102 ns in the throughput figures and 250 ns at the median here, and 30 ns
-of timer does not come close to explaining the gap. What does is that a loop of cancels overlaps them:
-while one is waiting on memory, the processor is already fetching for the next. Timing each one on its own
-forbids that. Running the same million cancels three ways shows how much of the gap is which:
+The first is that a cancel takes longer at the median here than the throughput figures would suggest, and
+30 ns of timer does not account for all of it. What does is that a loop of cancels overlaps them: while one
+is waiting on memory, the processor is already fetching for the next. Timing each one on its own forbids
+that. A separate run timing the same million cancels three ways in one go shows how much of the gap is
+which:
 
 | a million cancels | ns each |
 |---|---|
@@ -186,9 +195,9 @@ So a cancel on its own costs about 180 ns of real work, and the loop hides nearl
 number is wrong. They answer different questions, and an engine handling orders one at a time as they
 arrive is asking the second one.
 
-The second is the max. A submit whose median is 281 ns took 43 ms at worst in the run above. A separate
-run that printed every submit slower than half a millisecond, along with how many orders were resting at
-the time, accounts for every one of the fourteen it found:
+The second is the max. A submit whose median is 220 ns took 33 ms at worst in the run above. A separate run
+that printed every submit slower than half a millisecond, along with how many orders were resting at the
+time, accounts for every one of the fourteen it found:
 
 - six landed at exactly 22938, 45876, 91751, 183501, 367002 and 734004 resting orders, which are seven
   tenths of a power of two, rounded up. That is the order index reaching its load factor and rehashing
@@ -198,10 +207,44 @@ the time, accounts for every one of the fourteen it found:
   more than the capacities MSVC's `std::vector` grows through at one and a half times a step. That is the
   arena running out of room and copying every order it holds into a bigger one.
 
-Sending the same orders a second time, into a book that has already grown and never gives the room back,
-brings the worst case down from 31 ms to 0.24 ms. Amortised constant time is a promise about the average,
-and says nothing about the worst single call, which is the one an order is actually waiting on. A real
-engine would size both up front.
+Amortised constant time is a promise about the average, and says nothing about the worst single call, which
+is the one an order is actually waiting on.
+
+### Sizing the book up front
+
+`OrderBook::reserve` sets aside room in the index, the arena and the free list for a given number of
+resting orders before anything is submitted, so a book that stays within that size never has to grow. The
+benchmark sends the same orders into a book sized for all of them, and times the two books alternately,
+growing, sized, sized, growing, so that neither always runs first:
+
+| | growing | sized first |
+|---|---|---|
+| submit, a million at a time | 284.6 ns | 200.0 ns |
+| p50, one at a time | 220 ns | 230 ns |
+| p90 | 361 ns | 341 ns |
+| p99 | 761 ns | 691 ns |
+| p99.9 | 4448 ns | 1232 ns |
+| max | 33 ms | 1.6 ms |
+
+Growing had been costing nearly a third of the average submit, which is more than I expected from something
+that happens fourteen times in a million. The tail is where it shows most: the slowest submit in a thousand
+drops from 4.4 µs to 1.2 µs, and the slowest of all from 33 ms to 1.6 ms. What is left of the max is the
+operating system rather than the book, since cancel, which never grows anything, has one of the same size.
+
+The first version of `reserve` only reserved the memory, and it did nothing for the one in a thousand
+figure: 4.6 µs, no better than letting the book grow. Reserving memory only promises it. The operating
+system still hands each page over the first time it is written, and those first writes were landing in the
+middle of submits. Writing to every page inside `reserve`, while nothing is waiting, is what brought it down
+to 1.2 µs.
+
+The median is the one figure that does not improve, and the sized book is a step of the counter behind. A
+separate run that split each pass in half put the whole gap in the first half, 200 ns against 240, with none
+left in the second. That is most likely because the growing book spends the early part of a run small
+enough to stay in cache, and a book sized for a million orders never is. The second half rows in the
+benchmark show the two level, within a step, once both are full size.
+
+The simulator does not size its book. It has no way of knowing how big the book will get, and it never
+measures latency anyway.
 
 ### How it got there
 
@@ -249,17 +292,24 @@ measured. Rebuilt with matching flags, the arena changed the end to end time by 
 It is an easy mistake to make when the two versions are built by different means, and it flattered the
 change I happened to be making at the time, which is exactly when a result deserves a second look.
 
+The same thing happened again with latency. The first comparison of the growing and sized books timed each
+once, one straight after the other, and put the sized book well behind at the 99th percentile, 1323 ns
+against 842. Timing them alternately put it slightly ahead instead, 642 against 702, with exactly the same
+code. That is why the benchmark now alternates them. Anything measured under different conditions is being
+compared with the conditions as much as with anything else.
+
 ### What is left
 
-About 290 ns for a submit is still not fast. The index is better than it was but it is not free: with
-three quarters of a million orders resting the table is tens of megabytes, so an insert lands on a cache
-line nothing has touched recently and pays for the miss however the table is laid out.
+About 285 ns for a submit into a book that grows, and 200 ns into one sized up front, is still not fast. The
+index is not free even when it is sized: with three quarters of a million orders resting it is tens of
+megabytes, so an insert lands on a cache line nothing has touched recently and pays for the miss however the
+table is laid out.
 
-The cheapest remaining win is the one the latency figures point at, which is sizing the index and the
-arena up front, and that would take out the millisecond outliers entirely. The standard step after that
-is to lean on prices being bounded and swap the level map for a flat array indexed by tick, so that a
-level lookup becomes an array index and neighbouring levels sit next to each other in memory. Neither is
-done, and on the evidence above I would measure either one before assuming it helps.
+Sizing up front also needs the size to be known. A book that cannot know it would want the index to rehash
+a little at a time, moving a few entries across on every insert rather than all of them on one, which keeps
+the table small while the book is small and never stalls for long. The other standard step is to lean on
+prices being bounded and swap the level map for a flat array indexed by tick. Neither is done, and on the
+evidence above I would measure either one before assuming it helps.
 
 ## The simulation
 
@@ -316,7 +366,8 @@ from it they send an immediate or cancel order for whatever is mispriced, and ot
 distance either side of the mid. It keeps each quote a tick short of the other side so that it only ever
 rests, stops quoting a side once its position would pass 200, and leans both quotes against its position:
 a maker that is long lowers its bid and its offer, so it buys less and sells more and drifts back toward
-flat.
+flat. A second version of it centres its quotes on the view the ordinary traders price from instead of on
+the mid, and is only there to test an explanation further down.
 
 ### Two versions that did not work
 
@@ -360,38 +411,89 @@ The effects are small all the same. A correlation of 0.086 means the imbalance a
 percent of how far the price moves over the next fifty orders. `analysis/plots/imbalance_signal.png` shows
 the same thing split into ten groups by imbalance.
 
-The weak negative relationship in the two runs with nobody informed, around -0.1 with t near -3, is
-something I do not have a tested explanation for.
+### Why it points the wrong way with nobody informed
+
+The negative relationship in the two runs with nobody informed, around -0.1 with t near -3, was the one
+result here I could not account for at first. The explanation I tried was stale orders. When the value
+moves, the orders already resting on the side it moved away from are left behind, priced for a value that
+is no longer there. That side is the heavy one, and the price then moves into it as new orders arrive at
+the new value and trade against what was left behind. So a book heavy on the bid side comes before a fall,
+the opposite of the textbook, but only because of how that side came to be heavy.
+
+That makes three predictions: the imbalance should line up with how far the mid is from the value, the mid
+should move back toward the value, and once that gap is held fixed the imbalance should have nothing left
+to say. The experiments now keep the value at every event, so all three can be checked, over fifty orders:
+
+| | imbalance with gap | gap with next move | imbalance with next move | same, gap held fixed |
+|---|---|---|---|---|
+| original model | 0.303 | -0.541 | -0.086 (t -3.0) | 0.098 (t 3.4) |
+| ordinary traders on a 300 event lag | 0.339 | -0.535 | -0.107 (t -3.7) | 0.094 (t 3.3) |
+| plus informed traders | 0.092 | -0.537 | -0.010 (t -0.4) | 0.047 (t 1.6) |
+| plus informed traders looking five times as often | -0.025 | -0.502 | 0.058 (t 2.0) | 0.052 (t 1.9) |
+
+The first two came out as predicted, and strongly. Where the mid sits above the value the book is heavy on
+the bid side, and the mid moves back toward the value over the next fifty orders, with a correlation of
+-0.5 in every run.
+
+The third did not. Holding the gap fixed does not leave nothing. It leaves a positive relationship, 0.098
+and 0.094 with t statistics of 3.4 and 3.3, which is the textbook one: a book heavy on the bid side does
+come before a rise. It was there all along, underneath a larger effect pulling the other way, and the
+negative number in the first table is the two of them added together.
+
+With informed traders in the market the gap hardly lines up with the imbalance at all, because they trade
+the book back toward the value before it can drift far, and what is left once the gap is held fixed is
+smaller and not clearly more than chance. The imbalance with next move column differs a little from the
+first table for the lagged runs, because their first 300 events have no lagged value to compare with and
+are left out here.
 
 ### The market maker
 
 | | fills | P&L | spread earned | lost on position | position rms |
 |---|---|---|---|---|---|
 | no informed traders | 2448 ± 379 | 1790 ± 351 | 8291 ± 1581 | -6501 ± 1319 | 5.0 ± 0.1 |
+| no informed traders, maker sees their view | 723 ± 187 | 2830 ± 734 | 2418 ± 691 | 412 ± 138 | 13.5 ± 1.8 |
 | facing informed traders | 2172 ± 266 | 1411 ± 196 | 7214 ± 858 | -5802 ± 718 | 4.9 ± 0.1 |
+| facing informed traders, maker sees their view | 534 ± 97 | 1891 ± 402 | 1764 ± 300 | 127 ± 161 | 12.5 ± 1.3 |
 | facing informed traders, not leaning | 7548 ± 1243 | 6137 ± 1778 | 21392 ± 3829 | -15255 ± 2748 | 113.3 ± 6.7 |
 
 Money is in ticks times quantity, as the mean and standard deviation over ten seeds. Spread earned is what
 the maker made against the mid at the moment of each fill, which is what it would have kept had the price
 never moved afterwards, and lost on position is everything else.
 
-It makes money, and did on every one of the ten seeds in all three runs. But it hands most of the spread
-back: even with nobody informed in the market it loses 78% of what it earns to the price moving against it
-after it trades. The markouts in `analysis/plots/maker_markouts.png` show the same thing from the other
-side, at 0.52 ticks a unit at the moment of the fill and 0.12 a thousand events later.
+It makes money, and did on every one of the ten seeds in all five runs. But the maker quoting around the
+mid hands most of its spread back: even with nobody informed in the market it loses 78% of what it earns to
+the price moving against it after it trades. The markouts show the same thing from the other side. Taken
+over all ten seeds, the maker quoting around the mid earns 0.53 ticks a unit at the moment of the fill and
+has 0.12 of it left a thousand events later:
 
-That surprised me. My reading of it is that the maker is the least informed trader in this market. It
-prices off the mid, and the mid is made of orders placed from a view of the value that is already 300
-events old, so the maker's picture lags even the ordinary traders', who each price off that view directly.
-When the view moves, the next orders to arrive cross the maker's stale quote, and the price then carries on
-the way they were going. That is an interpretation rather than something I have tested. The test would be
-to give the maker the same view the ordinary traders have and see whether its markouts stop decaying.
+| markout per unit, in ticks | at the fill | 1 event on | 10 | 100 | 1000 |
+|---|---|---|---|---|---|
+| no informed traders | 0.527 | 0.275 | 0.185 | 0.127 | 0.116 |
+| no informed traders, maker sees their view | 0.556 | 0.445 | 0.468 | 0.540 | 0.632 |
+| facing informed traders | 0.518 | 0.259 | 0.173 | 0.108 | 0.096 |
+| facing informed traders, maker sees their view | 0.554 | 0.439 | 0.454 | 0.499 | 0.576 |
 
-Informed traders make it worse, but only a little, because at one trade in eighty they are a small part of
-the flow. P&L falls from 1790 to 1411, which is 21% and about three standard errors, and the markout a
-thousand events on falls from 0.119 to 0.090.
+My reading of that was that the maker is the least informed trader in this market. It prices off the mid,
+and the mid is made of orders placed from a view of the value that is already 300 events old, so the
+maker's picture lags even the ordinary traders', who each price off that view directly. The test was to
+give the maker the same view the ordinary traders have and see whether its markouts stop decaying, and the
+two runs where the maker sees their view are that test.
 
-Leaning on position is the clearest result of the lot. Without it the maker's position swings out to its
+The markouts do more than stop decaying. With the view they rise after the fill instead of falling, from
+0.56 at the fill to 0.63 a thousand events on, and the maker makes money on its position rather than losing
+it, 412 instead of -6501. The change in the markout a thousand events on is 0.515 ± 0.011, more than forty
+standard errors, so the explanation holds. It is filled far less often, 723 times against 2448, because
+quoting around the view rather than the book puts it off the touch more of the time, but markouts are per
+unit filled, so that does not account for the difference, and it still makes more money in total.
+
+Informed traders make things worse for the maker either way. Quoting around the mid, the markout a thousand
+events on falls from 0.116 to 0.096, a difference of 0.020 ± 0.006 or 3.3 standard errors, and P&L falls
+from 1790 to 1411. Quoting around their view, the markout falls by 0.056 ± 0.019, 2.9 standard errors, and
+P&L from 2830 to 1891. The cost is nearly three times as large there, which makes sense: once the maker is
+no longer the least informed trader, the informed traders are the only ones left who know more than it
+does.
+
+Leaning on position is the other clear result. Without it the maker's position swings out to its
 limit and back again, as `analysis/plots/maker_position.png` shows, and with it the typical position is 4.9
 instead of 113. The maker that does not lean makes more money, 6137 against 1411, because it stays on both
 sides of the touch and is filled three and a half times as often. But its P&L varies far more from one seed

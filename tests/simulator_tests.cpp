@@ -1,6 +1,7 @@
 #include "simulator.hpp"
 #include "test_runner.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 
@@ -8,7 +9,8 @@ int main() {
     TestRunner runner;
 
     Simulator simulator(50);
-    DataWriter writer("simulator_tests_output.csv");
+    //an empty name gives a writer that records nothing, so running the tests leaves no file behind
+    DataWriter writer("");
 
     SimulationStats stats = simulator.run(1000, writer);
 
@@ -31,7 +33,7 @@ int main() {
 
     //the run is seeded, so the same seed has to give the same answer twice
     Simulator repeat_simulator(50);
-    DataWriter repeat_writer("simulator_tests_output.csv");
+    DataWriter repeat_writer("");
     SimulationStats repeat_stats = repeat_simulator.run(1000, repeat_writer);
 
     runner.check(repeat_stats.orders_submitted == stats.orders_submitted,
@@ -42,7 +44,7 @@ int main() {
 
     //a different seed should not retrace the same run
     Simulator other_simulator(51);
-    DataWriter other_writer("simulator_tests_output.csv");
+    DataWriter other_writer("");
     SimulationStats other_stats = other_simulator.run(1000, other_writer);
 
     runner.check(other_stats.traded_quantity != stats.traded_quantity,
@@ -116,6 +118,39 @@ int main() {
     }
 
     runner.check(maker_always_passive, "the maker never trades through the mid, since it only rests");
+
+    //with history kept, the markout at zero events is the spread earned per unit, which is also what the
+    //edge the maker adds up fill by fill works out at. the two are worked out separately, so each checks
+    //the other
+    SimulationConfig history_config = maker_config;
+    history_config.record_history = true;
+
+    Simulator history_simulator(50, history_config);
+    DataWriter history_writer("");
+    SimulationStats history_stats = history_simulator.run(5000, history_writer);
+
+    double edge_per_unit = history_stats.maker_edge / static_cast<double>(history_stats.maker_volume);
+
+    runner.check(history_simulator.mid_history().size() == 5000, "history keeps a mid for every event");
+    runner.check(history_simulator.reference_history().size() == 5000,
+                 "and a reference price for every event");
+    runner.check(std::abs(history_stats.maker_markout_0 - edge_per_unit) < 1e-9,
+                 "the markout at zero events is exactly the spread earned per unit");
+    runner.check(history_stats.maker_fills == maker_stats.maker_fills &&
+                 history_stats.maker_pnl == maker_stats.maker_pnl,
+                 "and keeping history does not change anything that happens in the run");
+
+    //the maker centred on the view of the ordinary traders still makes a market
+    SimulationConfig their_view_config = maker_config;
+    their_view_config.maker_uses_noise_view = true;
+
+    Simulator their_view_simulator(50, their_view_config);
+    DataWriter their_view_writer("");
+    SimulationStats their_view_stats = their_view_simulator.run(5000, their_view_writer);
+
+    runner.check(their_view_stats.maker_fills > 0, "a maker working from their view still gets filled");
+    runner.check(their_view_stats.maker_peak_inventory <= their_view_config.maker_inventory_limit,
+                 "and still keeps inside its position limit");
 
     return runner.summary("simulator tests");
 }

@@ -188,6 +188,25 @@ int main() {
 
     report("submit", order_count, submit_timings);
 
+    //the same orders again into books told up front how many orders they will hold, so that none of them
+    //ever has to stop and grow part way through
+    std::vector<double> sized_timings;
+
+    for (int repetition = 0; repetition < repetitions; ++repetition) {
+        OrderBook book;
+        book.reserve(order_count);
+
+        auto start = std::chrono::steady_clock::now();
+        for (const Order& order : orders) {
+            book.submit(order);
+        }
+        auto end = std::chrono::steady_clock::now();
+
+        sized_timings.push_back(std::chrono::duration<double>(end - start).count());
+    }
+
+    report("submit, sized first", order_count, sized_timings);
+
     //cancelling, measured against a book holding nothing but resting orders. filling it is done outside
     //the timed section
     std::vector<double> cancel_timings;
@@ -284,22 +303,56 @@ int main() {
               << std::setw(10) << "p99.9"
               << std::setw(12) << "max" << "   (ns)\n";
 
-    //the vectors holding the timings are sized up front, so that growing them is not what gets measured
-    std::vector<std::uint64_t> submit_cycles;
-    submit_cycles.reserve(order_count);
+    //the growing book and the sized one are each timed twice, in the order growing, sized, sized, growing,
+    //so that neither always runs first or last. an earlier version timed each once in a fixed order, and
+    //that alone was enough to flip which of the two looked faster at the 99th percentile
+    std::vector<std::uint64_t> growing_cycles;
+    std::vector<std::uint64_t> sized_cycles;
+    growing_cycles.reserve(2 * order_count);
+    sized_cycles.reserve(2 * order_count);
 
-    {
+    auto time_submits = [&](bool sized, std::vector<std::uint64_t>& out) {
         OrderBook book;
+
+        if (sized) {
+            book.reserve(order_count);
+        }
 
         for (const Order& order : orders) {
             std::uint64_t start = cycles_now();
             book.submit(order);
             std::uint64_t end = cycles_now();
-            submit_cycles.push_back(end - start);
+            out.push_back(end - start);
         }
-    }
+    };
 
-    report_latency("submit", submit_cycles, per_nanosecond);
+    time_submits(false, growing_cycles);
+    time_submits(true, sized_cycles);
+    time_submits(true, sized_cycles);
+    time_submits(false, growing_cycles);
+
+    //the second half of each run, taken out before anything gets sorted, which is when both books are full
+    //size. the growing book is small for much of the first half and fits in cache, the sized one never does
+    auto second_half = [&](const std::vector<std::uint64_t>& cycles) {
+        std::vector<std::uint64_t> part;
+
+        for (std::size_t run = 0; run < 2; ++run) {
+            auto run_start = cycles.begin() + static_cast<std::ptrdiff_t>(run * order_count);
+            part.insert(part.end(),
+                        run_start + static_cast<std::ptrdiff_t>(order_count / 2),
+                        run_start + static_cast<std::ptrdiff_t>(order_count));
+        }
+
+        return part;
+    };
+
+    std::vector<std::uint64_t> growing_late = second_half(growing_cycles);
+    std::vector<std::uint64_t> sized_late = second_half(sized_cycles);
+
+    report_latency("submit", growing_cycles, per_nanosecond);
+    report_latency("submit, sized first", sized_cycles, per_nanosecond);
+    report_latency("submit, second half", growing_late, per_nanosecond);
+    report_latency("sized, second half", sized_late, per_nanosecond);
 
     std::vector<std::uint64_t> cancel_cycles;
     cancel_cycles.reserve(order_count);
