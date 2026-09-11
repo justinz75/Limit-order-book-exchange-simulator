@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux, GCC
+            os: ubuntu-latest
+            cxx: g++
+          - name: Linux, Clang
+            os: ubuntu-latest
+            cxx: clang++
+          - name: Windows, MSVC
+            os: windows-latest
+            cxx: ""
+
+    steps:
+      - uses: actions/checkout@v7
+
+      #msvc is picked up on its own, the linux jobs name their compiler
+      - name: Configure
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.cxx }}" ]; then
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          else
+            cmake -S . -B build
+          fi
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      #only msvc reproduces the committed csv exactly
+      - name: Simulation matches the committed data
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ./build/Release/simulator.exe
+          python - <<'PY'
+          import subprocess, sys
+          committed = subprocess.run(["git", "show", "HEAD:data/simulation.csv"], capture_output=True, check=True).stdout
+          produced = open("data/simulation.csv", "rb").read()
+          same = committed.replace(b"\r\n", b"\n") == produced.replace(b"\r\n", b"\n")
+          print("simulation.csv matches the committed data" if same else "simulation.csv differs from the committed data")
+          sys.exit(0 if same else 1)
+          PY
+
+      - name: Simulation runs
+        if: runner.os == 'Linux'
+        run: ./build/simulator
+
+  analysis:
+    name: Analysis script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pandas and matplotlib
+        run: pip install pandas matplotlib
+
+      - name: Run the analysis on the committed data
+        run: python analysis/analysis.py

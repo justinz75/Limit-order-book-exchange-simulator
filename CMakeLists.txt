@@ -11,6 +11,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+#warnings turned up on every compiler
+if(MSVC)
+    add_compile_options(/W4)
+else()
+    add_compile_options(-Wall -Wextra)
+endif()
+
 #the matching engine on its own
 add_library(order_book src/order_book.cpp)
 target_include_directories(order_book PUBLIC include)

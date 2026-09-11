@@ -1,5 +1,7 @@
 # Limit order book exchange simulator
 
+[![CI](https://github.com/justinz75/Limit-order-book-exchange-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/justinz75/Limit-order-book-exchange-simulator/actions/workflows/ci.yml)
+
 A matching engine for a single instrument, written in C++17, together with a simulator that pushes
 random order flow through it and writes every event to CSV so the resulting market can be looked at in
 pandas.
@@ -27,6 +29,10 @@ ctest -C Release --output-on-failure
 
 Both test binaries can also be run directly, and print how many checks passed.
 
+GitHub Actions builds every push and runs the tests on Linux with GCC and with Clang, and on Windows with
+MSVC, with warnings turned up on all three. It also checks that the analysis script still runs against the
+committed data.
+
 ## Running
 
 The simulator writes to `data/simulation.csv`, and that path is relative, so run it from the repository
@@ -52,6 +58,12 @@ Trades: 38150
 Traded quantity: 211739
 Average trade price: 102.302
 ```
+
+That exact run only comes out of MSVC. The C++ standard pins down `std::mt19937_64` exactly, but not the
+distributions that turn its output into prices and quantities, and each standard library implements those
+its own way. Built with Clang and libc++, the same seed gives a different run from the very first order, so
+every figure in this README is the one MSVC produces, and only the Windows build in CI is held to the
+committed `simulation.csv`.
 
 Then the plots and statistics:
 
@@ -509,6 +521,7 @@ data/           the csv writer, the simulation output, and the experiment output
 tests/          the two test suites and the small test helper they share
 benchmarks/     the throughput and latency benchmark
 analysis/       the pandas scripts and the plots they write
+.github/        the workflow that builds and tests every push
 ```
 
 ## What is not in here
