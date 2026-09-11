@@ -16,7 +16,7 @@ enum class OrderType {
     Market
 };
 
-//how long an order is willing to wait if it cannot trade the moment it arrives
+//creates an enumeration for how long an order can wait (time in force)
 enum class TimeInForce {
     //waits in the book until it trades or is cancelled
     GoodTillCancelled,
@@ -24,7 +24,7 @@ enum class TimeInForce {
     //takes whatever is available immediately and gives up on the rest
     ImmediateOrCancel,
 
-    //only trades if the whole quantity can be filled at once, and otherwise does not trade at all
+    //trades only if the whole quantity can be filled at once
     FillOrKill
 };
 
@@ -46,6 +46,6 @@ struct Order {
     Quantity remaining_quantity;
     Timestamp timestamp;
 
-    //defaulted so that an order written without one behaves the way every order in this book used to
+    //good till cancelled unless set otherwise
     TimeInForce time_in_force = TimeInForce::GoodTillCancelled;
 };

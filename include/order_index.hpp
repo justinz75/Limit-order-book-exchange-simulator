@@ -7,17 +7,7 @@
 #include <cstdint>
 #include <vector>
 
-//a hash table from order id to wherever that order is being held, laid out in one flat array.
-//
-//this was a std::unordered_map to begin with. measuring showed it was about seventy percent of the cost
-//of submitting an order, which is not surprising once you look at what it has to do: a node allocated
-//for every resting order, a pointer chased to reach each one, and a rehash of the whole table every time
-//the book grows past its load factor. an open addressing table keeps everything in one vector, so an
-//insert writes into memory it already owns and a lookup usually touches one cache line.
-//
-//entries are removed by pulling later ones back into the gap rather than leaving a tombstone behind.
-//tombstones would be simpler, but orders are cancelled and filled constantly here, and a table that
-//never reclaims them slowly fills up with the dead and every lookup gets longer.
+//a hash table from order id to where the order is held, stored in one flat array
 template <typename Value>
 class OrderIndex {
     public:
@@ -25,7 +15,7 @@ class OrderIndex {
             slots_.resize(initial_capacity);
         }
 
-        //adds an order, or replaces where an order of the same id is being held
+        //adds an order, or updates it if the id is already there
         void insert(OrderId id, const Value& value) {
             if ((occupied_ + 1) * 10 >= slots_.size() * maximum_load_percent) {
                 grow();
@@ -48,7 +38,7 @@ class OrderIndex {
             occupied_++;
         }
 
-        //returns where the order is held, or nullptr if the table has never heard of it
+        //returns where the order is held, or nullptr if it is not in the table
         const Value* find(OrderId id) const {
             std::size_t index = bucket(id);
 
@@ -63,7 +53,7 @@ class OrderIndex {
             return nullptr;
         }
 
-        //removes an order, and reports whether there was one to remove
+        //removes an order and returns whether it was there
         bool erase(OrderId id) {
             std::size_t index = bucket(id);
 
@@ -78,9 +68,7 @@ class OrderIndex {
             slots_[index].occupied = false;
             occupied_--;
 
-            //walk forward over the run of entries that follows. an entry has to be pulled back into the
-            //gap unless its own bucket sits between the gap and where the entry currently is, because
-            //moving one of those would put it before its bucket and a search would never find it
+            //pull later entries back into the gap, unless that would put one before its bucket
             std::size_t gap = index;
             std::size_t probe = index;
 
@@ -120,8 +108,7 @@ class OrderIndex {
             return slots_.size();
         }
 
-        //makes room for this many entries up front, so that filling the table up to that point never has
-        //to stop and rehash. anything already in it is kept
+        //makes room for this many entries up front, keeping anything already in the table
         void reserve(std::size_t entries) {
             std::size_t capacity = slots_.size();
 
@@ -141,25 +128,22 @@ class OrderIndex {
             bool occupied = false;
         };
 
-        //big enough that a small book never grows the table, small enough to be free to construct
+        //starting number of slots
         static constexpr std::size_t initial_capacity = 64;
 
-        //growing at seven tenths full keeps the runs of occupied slots short enough that a lookup
-        //rarely walks more than a couple of them
+        //the table grows once it is seven tenths full
         static constexpr std::size_t maximum_load_percent = 7;
 
         std::vector<Slot> slots_;
         std::size_t occupied_ = 0;
 
-        //order ids usually arrive in sequence, and taking them modulo the table size would then drop
-        //them into neighbouring slots and produce one long run. multiplying by the odd number nearest
-        //the golden ratio and keeping the top bits spreads consecutive ids across the whole table
+        //fibonacci hashing, so ids that arrive in sequence spread across the table
         std::size_t bucket(OrderId id) const {
             std::uint64_t mixed = static_cast<std::uint64_t>(id) * 0x9E3779B97F4A7C15ull;
             return static_cast<std::size_t>(mixed >> shift_);
         }
 
-        //the table size is always a power of two, so wrapping round is a mask rather than a division
+        //the next slot along, wrapping round at the end of the table
         std::size_t next(std::size_t index) const {
             return (index + 1) & (slots_.size() - 1);
         }
@@ -168,14 +152,14 @@ class OrderIndex {
             rebuild(slots_.size() * 2);
         }
 
-        //moves every entry into a table of the given size, which has to be a power of two
+        //moves every entry into a new table of the given size, a power of two
         void rebuild(std::size_t capacity) {
             std::vector<Slot> old_slots = std::move(slots_);
 
             slots_.clear();
             slots_.resize(capacity);
 
-            //the shift keeps as many of the top bits of the mixed hash as it takes to index the table
+            //works out the shift from the new table size
             std::size_t bits = 0;
             while ((static_cast<std::size_t>(1) << bits) < capacity) {
                 bits++;
@@ -191,6 +175,6 @@ class OrderIndex {
             }
         }
 
-        //how far down the mixed hash to shift to land inside the table. 64 minus log2 of the capacity
+        //how far to shift the hash to land inside the table, 64 minus log2 of the size
         std::size_t shift_ = 58;
 };

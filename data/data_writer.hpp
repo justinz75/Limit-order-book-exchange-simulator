@@ -8,8 +8,7 @@
 
 class DataWriter {
 public:
-    //an empty filename gives a writer that records nothing at all, which is what the experiments use
-    //for the extra seeds they only want the totals from
+    //an empty filename gives a writer that records nothing
     explicit DataWriter(const std::string& filename);
 
     ~DataWriter();

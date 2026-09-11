@@ -13,8 +13,7 @@
 //each experiment runs as many events as the main simulation does
 constexpr std::size_t number_of_events = 100000;
 
-//and is repeated over this many seeds. one run of a market maker is one draw of its profit and loss,
-//which on its own cannot say whether a change to it helped or not
+//each experiment is repeated over this many seeds
 constexpr int seeds_per_experiment = 10;
 constexpr std::uint64_t first_seed = 50;
 
@@ -25,16 +24,13 @@ struct Experiment {
     SimulationConfig config;
 };
 
-//the experiments are built so that each one differs from another in a single thing, so that any
-//difference between those two can be put down to that one thing and not to something else that moved
+//builds the experiments, each differing from another in one setting
 std::vector<Experiment> build_experiments() {
-    //the original model run again here, only so that its history is kept for comparing the book with the
-    //value. its events come out the same as data/simulation.csv
+    //the original model again, run here so its history is kept
     SimulationConfig original;
     original.record_history = true;
 
-    //ordinary traders working from a view of the value that is a few hundred events old. the price still
-    //moves, because their view does, but it lags, and the lag is what informed traders trade on
+    //ordinary traders working from a view of the value 300 events old
     SimulationConfig noise_only;
     noise_only.noise_view_lag = 300;
     noise_only.record_history = true;
@@ -42,16 +38,14 @@ std::vector<Experiment> build_experiments() {
     SimulationConfig informed = noise_only;
     informed.informed_percentage = 10;
 
-    //the same, with informed traders looking five times as often. this is here to test one explanation
-    //for what the first informed run showed, and its result is reported whichever way it comes out
+    //the same, with informed traders looking five times as often
     SimulationConfig informed_heavy = noise_only;
     informed_heavy.informed_percentage = 50;
 
     SimulationConfig maker = noise_only;
     maker.market_maker = true;
 
-    //the maker centred on the view the ordinary traders price from, rather than on the mid. this tests
-    //the explanation for why the maker gives back so much of its spread even with nobody informed
+    //the maker centred on the ordinary traders' view rather than the mid
     SimulationConfig maker_their_view = maker;
     maker_their_view.maker_uses_noise_view = true;
 
@@ -103,8 +97,7 @@ void write_maker_fills(const std::string& path, const Simulator& simulator) {
     }
 }
 
-//the mid and the reference price at the end of every event, for comparing where the book is with where
-//the value is
+//writes the mid and reference price at the end of every event
 void write_history(const std::string& path, const Simulator& simulator) {
     std::ofstream file(path);
     file << "event,mid,reference\n";
@@ -141,7 +134,7 @@ Spread summarise(const std::vector<double>& values) {
         squares += (value - result.mean) * (value - result.mean);
     }
 
-    //the sample deviation, since these runs are a sample of what could have happened
+    //the sample standard deviation
     if (values.size() > 1) {
         result.deviation = std::sqrt(squares / static_cast<double>(values.size() - 1));
     }
@@ -189,8 +182,7 @@ int main() {
         for (int i = 0; i < seeds_per_experiment; ++i) {
             std::uint64_t seed = first_seed + static_cast<std::uint64_t>(i);
 
-            //only the first seed writes out every event, since that is the run the analysis plots. the
-            //rest only contribute their totals, and an empty name gives a writer that records nothing
+            //only the first seed writes every event out, the rest just give their totals
             std::string events_path;
             if (i == 0) {
                 events_path = output_directory + "/" + experiment.name + ".csv";

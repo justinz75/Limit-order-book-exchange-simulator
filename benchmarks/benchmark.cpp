@@ -18,24 +18,20 @@
 //how many orders each measurement pushes through the book
 constexpr std::size_t order_count = 1000000;
 
-//each measurement is repeated this many times. one run of this varies by more than the differences
-//that are worth measuring, so a single timing says very little
+//each measurement is repeated this many times and the median is reported
 constexpr int repetitions = 5;
 
-//the orders are spread over this many ticks, which is what keeps the book to a realistic handful of
-//price levels rather than one enormous queue
+//the orders are spread over this many ticks either side of 100
 constexpr Price price_range = 20;
 
-//the depth query is measured over fewer iterations than the rest, because a version of it that adds the
-//quantities up by walking each level takes long enough that a million calls does not finish
+//fewer iterations for depth, which is slower per call than the rest
 constexpr std::size_t depth_iterations = 20000;
 
-//builds the orders up front so that generating them is not counted in the measurement
+//builds the orders up front so generating them is not timed
 std::vector<Order> build_orders(std::uint64_t seed) {
     std::mt19937_64 rng(seed);
     std::uniform_int_distribution<int> side_distribution(0, 1);
-    //the two sides overlap around the reference price, so a good share of the orders cross and have
-    //to be matched rather than simply coming to rest
+    //the two sides overlap so that some of the orders cross and trade
     std::uniform_int_distribution<int> offset_distribution(-3, static_cast<int>(price_range));
     std::uniform_int_distribution<Quantity> quantity_distribution(1, 20);
 
@@ -65,8 +61,7 @@ std::vector<Order> build_orders(std::uint64_t seed) {
     return orders;
 }
 
-//fills a book with orders that cannot trade against each other, so that every one of them is left
-//resting and available to be cancelled or read
+//fills a book with bids that cannot trade, so they are all left resting
 void fill_with_resting_orders(OrderBook& book, std::vector<OrderId>& ids) {
     ids.clear();
     ids.reserve(order_count);
@@ -88,14 +83,13 @@ void fill_with_resting_orders(OrderBook& book, std::vector<OrderId>& ids) {
     }
 }
 
-//the middle timing of the repetitions, which throws away both the unlucky run and the lucky one
+//returns the middle timing of the repetitions
 double median(std::vector<double> timings) {
     std::sort(timings.begin(), timings.end());
     return timings[timings.size() / 2];
 }
 
-//prints one result line, with the rate worked out from the median time and the spread alongside it so
-//it is clear how much of a difference is worth reading anything into
+//prints one result line, with the median and the range of the timings
 void report(const std::string& name, std::size_t operations, std::vector<double> timings) {
     double middle = median(timings);
     std::sort(timings.begin(), timings.end());
@@ -112,22 +106,16 @@ void report(const std::string& name, std::size_t operations, std::vector<double>
               << "   (" << fastest << " to " << slowest << ")\n";
 }
 
-//std::chrono::steady_clock on windows ticks every 100 ns, which is about as long as a cancel takes, so
-//timing one operation with it would read as nothing, one tick or two. the processor's timestamp counter
-//ticks a few billion times a second instead. it has to be turned into time using a rate measured
-//against the steady clock, and that relies on it ticking at a constant rate whatever the processor's
-//clock speed is doing, which is true of any processor from roughly the last fifteen years
+//reads the processor timestamp counter, which is finer than steady_clock on windows
 std::uint64_t cycles_now() {
-    //the fences stop out of order execution from taking the reading early or letting the work being
-    //timed drift outside it
+    //fences stop the processor moving the timed work outside the reading
     _mm_lfence();
     std::uint64_t cycles = __rdtsc();
     _mm_lfence();
     return cycles;
 }
 
-//how many counter ticks make a nanosecond, found by counting them over a stretch long enough that the
-//steady clock's coarse ticks stop mattering
+//how many counter ticks make a nanosecond, measured against steady_clock
 double cycles_per_nanosecond() {
     auto wall_start = std::chrono::steady_clock::now();
     std::uint64_t cycles_start = cycles_now();
@@ -168,7 +156,7 @@ int main() {
 
     std::vector<Order> orders = build_orders(7);
 
-    //submitting orders, which is matching plus resting whatever does not trade
+    //time submitting the orders into a book that grows as it goes
     std::vector<double> submit_timings;
     std::size_t trades_made = 0;
 
@@ -188,8 +176,7 @@ int main() {
 
     report("submit", order_count, submit_timings);
 
-    //the same orders again into books told up front how many orders they will hold, so that none of them
-    //ever has to stop and grow part way through
+    //the same orders into books sized up front, so they never have to grow
     std::vector<double> sized_timings;
 
     for (int repetition = 0; repetition < repetitions; ++repetition) {
@@ -207,8 +194,7 @@ int main() {
 
     report("submit, sized first", order_count, sized_timings);
 
-    //cancelling, measured against a book holding nothing but resting orders. filling it is done outside
-    //the timed section
+    //time cancelling every order in a book full of resting orders
     std::vector<double> cancel_timings;
     std::size_t cancelled = 0;
 
@@ -233,8 +219,7 @@ int main() {
 
     report("cancel", order_count, cancel_timings);
 
-    //reading the book, which is what a strategy would be doing between events. one book is built and
-    //then read repeatedly, since reading does not change it
+    //time reading the top of the book and its depth
     OrderBook read_book;
     std::vector<OrderId> read_ids;
     fill_with_resting_orders(read_book, read_ids);
@@ -271,15 +256,13 @@ int main() {
     report("best bid", order_count, quote_timings);
     report("bid depth, 5 deep", depth_iterations, depth_timings);
 
-    //latency, which is where the tail lives. every operation is timed on its own here, so that the slow
-    //ones show up instead of being averaged away by the million fast ones around them
+    //latency: time every operation on its own so the slow ones show up
     std::cout << "\nLatency per operation, each timed on its own\n";
     std::cout << "--------------------------------------------\n";
 
     double per_nanosecond = cycles_per_nanosecond();
 
-    //the cost of reading the counter twice with nothing in between. it is inside every figure below,
-    //and is printed rather than subtracted, since taking it off can push the fastest readings below zero
+    //cost of reading the counter twice, which is included in every figure below
     std::vector<std::uint64_t> overhead;
     overhead.reserve(100000);
 
@@ -303,9 +286,7 @@ int main() {
               << std::setw(10) << "p99.9"
               << std::setw(12) << "max" << "   (ns)\n";
 
-    //the growing book and the sized one are each timed twice, in the order growing, sized, sized, growing,
-    //so that neither always runs first or last. an earlier version timed each once in a fixed order, and
-    //that alone was enough to flip which of the two looked faster at the 99th percentile
+    //time the growing and sized books twice each, alternating so neither always runs first
     std::vector<std::uint64_t> growing_cycles;
     std::vector<std::uint64_t> sized_cycles;
     growing_cycles.reserve(2 * order_count);
@@ -331,8 +312,7 @@ int main() {
     time_submits(true, sized_cycles);
     time_submits(false, growing_cycles);
 
-    //the second half of each run, taken out before anything gets sorted, which is when both books are full
-    //size. the growing book is small for much of the first half and fits in cache, the sized one never does
+    //the second half of each run, when both books are full size
     auto second_half = [&](const std::vector<std::uint64_t>& cycles) {
         std::vector<std::uint64_t> part;
 
@@ -372,7 +352,7 @@ int main() {
 
     report_latency("cancel", cancel_cycles, per_nanosecond);
 
-    //printed so that none of the work above can be optimised away as unused
+    //printed so the compiler cannot optimise the work above away
     std::cout << "\nTrades made: " << trades_made
               << " (" << std::setprecision(1) << (100.0 * trades_made / order_count)
               << "% of orders traded)\n";

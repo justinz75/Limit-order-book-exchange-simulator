@@ -27,15 +27,13 @@ const std::vector<double>& Simulator::reference_history() const {
 //the size of the random step the reference price takes each event
 constexpr double reference_step_size = 0.03;
 
-//the reference price is not allowed below this, since a price cannot be negative
+//the lowest the reference price is allowed to go
 constexpr double minimum_reference_price = 1.0;
 
-//how tightly orders cluster around the reference price. a higher value keeps them closer to it
+//how tightly orders cluster around the reference price, higher is tighter
 constexpr double offset_tightness = 0.55;
 
-//moves the reference price by a small random step. letting it wander is what allows resting orders to
-//be reached and traded rather than sitting in the book forever, so it is deliberately not pulled back
-//toward any particular level
+//moves the reference price by a small random step
 void Simulator::step_reference_price() {
     std::normal_distribution<double> noise(0.0, reference_step_size);
     reference_price_ += noise(rng_);
@@ -55,7 +53,7 @@ Price Simulator::random_offset() {
     return static_cast<Price>(distribution(rng_));
 }
 
-//the reference as it stood noise_view_lag events ago, which with no lag is simply where it is now
+//returns the reference as it was noise_view_lag events ago
 double Simulator::noise_view() const {
     if (config_.noise_view_lag > 0 && !reference_history_.empty()) {
         std::size_t back = std::min(config_.noise_view_lag, reference_history_.size() - 1);
@@ -65,12 +63,11 @@ double Simulator::noise_view() const {
     return reference_price_;
 }
 
-//a buy is placed at or below the anchor and a sell at or above it, so an order only trades when it is
-//priced aggressively enough to reach the other side
+//a buy is placed at or below the value and a sell at or above it
 Price Simulator::random_price(Side side) {
     Price offset = random_offset();
 
-    //an ordinary trader prices off the value as it sees it, which is out of date by noise_view_lag events
+    //ordinary traders price off their possibly out of date view of the value
     Price reference = static_cast<Price>(std::llround(noise_view()));
 
     if (side == Side::Buy) {
@@ -92,8 +89,7 @@ std::uint64_t Simulator::random_trader_id() {
     return distribution(rng_);
 }
 
-//informed traders are numbered apart from the ordinary ones, so the rule against trading with yourself
-//never gets in the way of the two trading with each other
+//informed traders get their own range of trader ids, apart from the ordinary ones
 TraderId Simulator::random_informed_trader_id() {
     std::uniform_int_distribution<TraderId> distribution(1001, 1100);
     return distribution(rng_);
@@ -112,8 +108,7 @@ OrderId Simulator::choose_order_to_cancel() {
     return known_order_ids_[distribution(rng_)];
 }
 
-//the share of events that cancel a resting order rather than submitting a new one. orders arrive
-//faster than they trade, so without a healthy cancel rate the book only ever grows
+//the share of events that cancel a resting order rather than submitting a new one
 constexpr int cancel_percentage = 40;
 
 //returns true if the next event should cancel a resting order rather than submit a new one
@@ -152,7 +147,7 @@ Order Simulator::generate_order() {
     Price price = random_price(side);
     Quantity quantity = random_quantity();
 
-    //a market order takes whatever the book offers, so it carries no price of its own
+    //market orders have no price of their own
     OrderType type = OrderType::Limit;
     if (should_be_market()) {
         type = OrderType::Market;
@@ -174,7 +169,7 @@ Order Simulator::generate_order() {
 
 //submits an order to the order book, records the resulting trades and updates the statistics
 void Simulator::process_order(const Order& order, std::size_t event_number, DataWriter& writer) {
-    //the mid the order saw when it arrived, which is what a market maker's fill is measured against
+    //the mid when the order arrived, used for the maker's edge
     double mid_before = order_book_.mid_price().value_or(maker_center_);
 
     auto trades = order_book_.submit(order);
@@ -217,8 +212,7 @@ void Simulator::process_order(const Order& order, std::size_t event_number, Data
         }
     }
 
-    //only a good till cancelled limit order with quantity left over is resting in the book, so only
-    //those can be cancelled later
+    //only a good till cancelled limit order with quantity left over can be cancelled later
     if (order.type == OrderType::Limit &&
         order.time_in_force == TimeInForce::GoodTillCancelled &&
         filled < order.remaining_quantity) {
@@ -226,10 +220,7 @@ void Simulator::process_order(const Order& order, std::size_t event_number, Data
     }
 }
 
-//an informed trader can see the reference price, which nobody else can. it buys whatever is offered
-//below that and sells into whatever is bid above it, and when the book is fair it does nothing at all.
-//its orders are immediate or cancel, because the edge is in what is already resting there, and once
-//that is gone it has no reason to wait around at a price
+//an informed trader trades against whatever is mispriced, and otherwise does nothing
 void Simulator::process_informed(std::size_t event_number, DataWriter& writer) {
     auto best_bid = order_book_.best_bid();
     auto best_ask = order_book_.best_ask();
@@ -241,7 +232,7 @@ void Simulator::process_informed(std::size_t event_number, DataWriter& writer) {
         static_cast<double>(best_ask.value()) < reference_price_ - config_.informed_threshold) {
         side = Side::Buy;
 
-        //willing to pay anything up to the reference price, less the margin it wants for bothering
+        //pays up to the reference price, less its threshold
         price = static_cast<Price>(std::floor(reference_price_ - config_.informed_threshold));
     } else if (best_bid.has_value() &&
                static_cast<double>(best_bid.value()) > reference_price_ + config_.informed_threshold) {
@@ -270,28 +261,23 @@ void Simulator::process_informed(std::size_t event_number, DataWriter& writer) {
     process_order(order, event_number, writer);
 }
 
-//the maker leaves a quote exactly where it is if the price it wants has not changed. taking it down and
-//putting it straight back up would send it to the back of the queue at that price, behind every order
-//that had arrived there since, and it would almost never be the one to trade. the first version of this
-//did exactly that, every event, and was filled a handful of times in a hundred thousand events
+//updates the market maker's quotes, leaving any whose price has not changed
 void Simulator::requote_market_maker() {
     auto best_bid = order_book_.best_bid();
     auto best_ask = order_book_.best_ask();
 
     if (config_.maker_uses_noise_view) {
-        //rounded to the nearest half tick, which is the grid a mid always sits on, so that the maker
-        //quotes the same shape of market it would around a mid and only what it knows has changed
+        //rounded to the nearest half tick, the grid a mid sits on
         maker_center_ = std::round(noise_view() * 2.0) / 2.0;
     } else if (best_bid.has_value() && best_ask.has_value()) {
         maker_center_ = (static_cast<double>(best_bid.value()) +
                          static_cast<double>(best_ask.value())) / 2.0;
     }
 
-    //leaning both quotes the same way as the position is how the maker gets back toward flat
+    //lean both quotes against the position to drift back toward flat
     double skew = -config_.maker_skew_per_unit * static_cast<double>(maker_inventory_);
 
-    //rounding outward rather than to the nearest tick keeps the two quotes the same distance from the
-    //centre. a centre ending in a half would otherwise always round the same way and push both quotes up
+    //round outward so both quotes sit the same distance from the centre
     Price wanted_bid = static_cast<Price>(std::floor(maker_center_ + skew - config_.maker_half_spread));
     Price wanted_ask = static_cast<Price>(std::ceil(maker_center_ + skew + config_.maker_half_spread));
 
@@ -299,7 +285,7 @@ void Simulator::requote_market_maker() {
     bool show_bid = maker_inventory_ + size <= config_.maker_inventory_limit;
     bool show_ask = maker_inventory_ - size >= -config_.maker_inventory_limit;
 
-    //the bid is kept a tick short of the best offer, so it can only ever rest and never trade on arrival
+    //keep the bid a tick below the best offer so it only ever rests
     best_ask = order_book_.best_ask();
     if (best_ask.has_value()) {
         wanted_bid = std::min(wanted_bid, best_ask.value() - 1);
@@ -307,8 +293,7 @@ void Simulator::requote_market_maker() {
 
     update_maker_quote(Side::Buy, show_bid, wanted_bid);
 
-    //the offer is worked out after the bid has settled, so that it cannot land on or under the bid
-    //the maker has just put up, which would have the maker trading with itself
+    //work out the offer after the bid so the two can never cross
     best_bid = order_book_.best_bid();
     if (best_bid.has_value()) {
         wanted_ask = std::max(wanted_ask, best_bid.value() + 1);
@@ -354,8 +339,7 @@ void Simulator::update_maker_quote(Side side, bool show, Price wanted) {
     remaining = config_.maker_quote_size;
 }
 
-//the maker's edge on a fill is how far the price was from the mid in its favour: below the mid for a
-//buy and above it for a sell. its cash and position move the ordinary way
+//updates the maker's cash, position and edge for a fill
 void Simulator::record_maker_fill(const Trade& trade, std::size_t event_number, double mid_before) {
     Side maker_side;
 
@@ -400,9 +384,7 @@ void Simulator::record_maker_fill(const Trade& trade, std::size_t event_number, 
     maker_fills_.push_back({event_number, maker_side, trade.price, trade.quantity, mid_before});
 }
 
-//a buy did well if the mid went up afterwards and a sell if it went down, so the move is signed from the
-//side the maker was on and weighted by how much it filled. fills too close to the end of the run for the
-//horizon to be reached are left out, rather than being measured against a mid that never came
+//average markout per unit, leaving out fills too near the end for the horizon
 double Simulator::average_markout(std::size_t horizon) const {
     double weighted = 0.0;
     double units = 0.0;
@@ -450,7 +432,7 @@ void Simulator::process_cancel() {
         stats_.successful_cancels++;
     }
 
-    //the order is forgotten either way, since a cancel only fails once the order has been filled
+    //forget the order either way, since a failed cancel means it was already filled
     known_order_ids_.erase(
         std::remove(
             known_order_ids_.begin(),
@@ -478,8 +460,7 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
         //the market drifts a little between events, whether or not an order arrives
         step_reference_price();
 
-        //the maker refreshes its quotes before anything else happens, so it is always showing a price
-        //based on the book as it stands
+        //the maker updates its quotes before anything else happens
         if (config_.market_maker) {
             requote_market_maker();
         }
@@ -492,15 +473,12 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
             process_order(order, event_number, writer);
         }
 
-        //informed traders act on top of the ordinary flow rather than in place of some of it, so the
-        //ordinary traders behave the same way whether or not there is anybody informed in the market.
-        //the check on the percentage comes first so that the original model never draws the random
-        //number, and its results stay exactly as they were
+        //informed traders act on top of the ordinary flow rather than replacing any of it
         if (config_.informed_percentage > 0 && should_be_informed()) {
             process_informed(event_number, writer);
         }
 
-        //the mid at the end of the event, carried over from the last one if one side of the book is empty
+        //record the mid, reusing the last one if a side of the book is empty
         if (config_.record_history) {
             double fallback = mid_history_.empty() ? reference_price_ : mid_history_.back();
             mid_history_.push_back(order_book_.mid_price().value_or(fallback));
@@ -525,7 +503,7 @@ SimulationStats Simulator::run(std::size_t number_of_events, DataWriter& writer)
         }
     }
 
-    //the book counts these as it matches, so they are collected at the end rather than event by event
+    //collect the self trade cancellations the book counted
     stats_.self_trade_cancellations = order_book_.self_trade_cancellations();
 
     if (config_.market_maker && number_of_events > 0) {

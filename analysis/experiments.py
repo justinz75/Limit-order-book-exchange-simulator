@@ -10,7 +10,7 @@ experiments_dir = root / "data" / "experiments"
 plots_dir = Path(__file__).resolve().parent / "plots"
 plots_dir.mkdir(exist_ok=True)
 
-#part one: does the imbalance in the book say which way the price goes next
+#part one: does book imbalance predict the next price move
 
 #how far ahead to look, counted in orders
 horizons = [1, 10, 50, 200]
@@ -18,7 +18,7 @@ horizons = [1, 10, 50, 200]
 #the horizon the decile plot is drawn for
 plot_horizon = 50
 
-#fewer price moves than this in a sample and a correlation is not reported at all
+#skip a correlation when a sample has fewer price moves than this
 minimum_moves = 30
 
 datasets = {
@@ -31,13 +31,13 @@ datasets = {
 def load_book(path):
     df = pd.read_csv(path)
 
-    #the book is only written out on order rows, so the trades are dropped
+    #keep only the order rows, since trades have no book data
     book = df[df["event_type"] == "NEW_ORDER"].reset_index(drop=True)
 
     total = book["bid_depth"] + book["ask_depth"]
     book["imbalance"] = (book["bid_depth"] - book["ask_depth"]) / total.where(total > 0)
 
-    #the move is measured forward from each row, so the imbalance only ever uses what was known then
+    #move in the mid over the next few orders from each row
     for horizon in horizons:
         book[f"move_{horizon}"] = book["mid_price"].shift(-horizon) - book["mid_price"]
 
@@ -60,14 +60,10 @@ for name, book in books.items():
     for horizon in horizons:
         pairs = book[["imbalance", f"move_{horizon}"]].dropna()
 
-        #moves over overlapping stretches share most of their path, so neighbouring samples are not
-        #independent and a t statistic taken over all of them would look far more certain than it is.
-        #taking every horizon-th row leaves stretches that do not overlap, which is what the t uses
+        #use non-overlapping stretches so the t statistic is not inflated
         separate = pairs.iloc[::horizon]
 
-        #a correlation needs the price to actually move. an early version of these experiments had a
-        #price that almost never moved at all, and a handful of moves among sixty thousand rows gave a
-        #correlation that looked enormous and meant nothing. so the moves are counted before anything
+        #count the price moves, since a correlation needs the price to actually move
         moves = int((separate[f"move_{horizon}"] != 0).sum())
 
         if moves < minimum_moves:
@@ -84,7 +80,7 @@ plt.figure()
 for name, book in books.items():
     pairs = book[["imbalance", f"move_{plot_horizon}"]].dropna()
 
-    #ranked first so that the ten groups come out the same size even where imbalance values repeat
+    #rank first so the ten groups come out the same size
     deciles = pd.qcut(pairs["imbalance"].rank(method="first"), 10, labels=False)
     means = pairs.groupby(deciles)[f"move_{plot_horizon}"].mean()
 
@@ -98,14 +94,7 @@ plt.legend()
 plt.savefig(plots_dir / "imbalance_signal.png")
 plt.close()
 
-#part two: why the imbalance points the wrong way when nobody is informed.
-#
-#the explanation being tested: when the value moves, the orders already resting on the side it moved away
-#from are left behind, priced for a value that is no longer there. that side is the heavy one, and the
-#price then moves into it as new orders arrive at the new value and trade against what was left behind.
-#if that is right, the imbalance should line up with how far the mid is from the value, the price should
-#move back toward the value, and once the gap between them is held fixed the imbalance should have
-#nothing left to say about where the price goes
+#part two: is the negative signal just the book being out of line with the value
 
 stale_datasets = {
     "original model": ("original", 0),
@@ -115,7 +104,7 @@ stale_datasets = {
 }
 
 def residual(values, control):
-    #what is left of values once the part that moves in step with control is taken out
+    #what is left of values once the part explained by control is removed
     slope = np.cov(values, control)[0, 1] / np.var(control, ddof=1)
     return values - slope * control
 
@@ -130,7 +119,7 @@ for name, (experiment, lag) in stale_datasets.items():
     book = load_book(experiments_dir / f"{experiment}.csv")
     history = pd.read_csv(experiments_dir / f"{experiment}_history.csv").set_index("event")
 
-    #the value as the ordinary traders see it at each event, which is the reference lag events earlier
+    #the value the ordinary traders see, which is the reference lag events earlier
     view = history["reference"].shift(lag)
     book["gap"] = book["mid_price"] - book["event"].map(view)
 
@@ -181,8 +170,7 @@ for experiment, label in maker_runs.items():
 
 print("", flush=True)
 
-#the four runs that make two pairs: with and without informed traders, and within each the maker quoting
-#around the mid or around the view of the ordinary traders
+#the four maker runs, with and without informed traders and on the mid or their view
 compared = {
     "maker": "mid",
     "maker_their_view": "their view",
@@ -212,10 +200,7 @@ plt.tight_layout()
 plt.savefig(plots_dir / "maker_pnl.png")
 plt.close()
 
-#markouts: how the price moved after each fill, from the maker's side of it. a buy did well if the mid
-#went up afterwards and a sell if it went down. at zero it is the spread earned per unit, and how far it
-#falls from there as the horizon grows is how much the traders who filled the maker knew. each seed gives
-#one markout curve, so these are the mean and spread over ten of them rather than one run
+#markouts, averaged over ten seeds: how the mid moved after each fill, from the maker's side
 
 markout_horizons = [0, 1, 10, 100, 1000]
 markout_columns = [f"maker_markout_{h}" for h in markout_horizons]
@@ -232,8 +217,7 @@ for experiment, label in maker_runs.items():
 
 print("", flush=True)
 
-#how much each change moves the markout a thousand events on, against the standard error of a difference
-#between two means taken over independent seeds
+#change in a markout between two runs, and its standard error
 def difference(first, second, column):
     a = markouts.loc[first]
     b = markouts.loc[second]
@@ -262,10 +246,10 @@ for experiment in compared:
     row = markouts.loc[experiment]
     means = [row[(c, "mean")] for c in markout_columns]
 
-    #the bars are standard errors, the uncertainty in each mean, rather than the spread of single runs
+    #error bars are standard errors of the mean
     errors = [row[(c, "std")] / np.sqrt(row[(c, "count")]) for c in markout_columns]
 
-    #zero cannot go on a log axis, so the horizons are drawn one step along each
+    #evenly spaced horizons, since zero cannot go on a log axis
     plt.errorbar(range(len(markout_horizons)), means, yerr=errors, marker="o", capsize=3,
                  label=maker_runs[experiment])
 
@@ -281,7 +265,7 @@ plt.close()
 #the maker's position over one run, leaning on it and not
 plt.figure()
 
-#the one that does not lean is drawn first, so the one that does, which stays near zero, sits on top
+#draw the one that does not lean first so the other stays visible on top
 position_labels = {
     "maker_informed_no_skew": "not leaning on its position",
     "maker_informed": "leaning on its position",

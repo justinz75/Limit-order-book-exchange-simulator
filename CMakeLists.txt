@@ -6,12 +6,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-#default to a release build, since the benchmark numbers are meaningless without optimisation
+#default to a release build
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-#the matching engine on its own, with no dependency on the simulation around it
+#the matching engine on its own
 add_library(order_book src/order_book.cpp)
 target_include_directories(order_book PUBLIC include)
 
@@ -24,7 +24,7 @@ target_link_libraries(simulation PUBLIC order_book)
 add_executable(simulator src/simulator_main.cpp)
 target_link_libraries(simulator PRIVATE simulation)
 
-#runs the market maker and informed trader experiments, which analysis/experiments.py then reads
+#runs the informed trader and market maker experiments
 add_executable(experiments src/experiments_main.cpp)
 target_link_libraries(experiments PRIVATE simulation)
 

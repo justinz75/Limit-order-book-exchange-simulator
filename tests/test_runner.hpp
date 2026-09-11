@@ -4,13 +4,12 @@
 #include <iostream>
 #include <string>
 
-//a small stand in for a test framework. these tests used assert before, but assert is compiled out when
-//NDEBUG is defined, so a release build would report that everything passed without checking anything
+//a small test helper used instead of assert, which is compiled out in release builds
 struct TestRunner {
     int checks_run = 0;
     int checks_failed = 0;
 
-    //records the result of one check, and prints the ones that fail rather than stopping at the first
+    //records one check and prints it if it fails
     void check(bool passed, const std::string& description) {
         checks_run++;
 
@@ -20,7 +19,7 @@ struct TestRunner {
         }
     }
 
-    //prints how the suite did and returns the exit code main should hand back
+    //prints how the suite did and returns the exit code for main
     int summary(const std::string& suite_name) const {
         std::cout << suite_name << ": "
                   << (checks_run - checks_failed) << "/" << checks_run

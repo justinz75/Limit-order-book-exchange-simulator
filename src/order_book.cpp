@@ -4,8 +4,7 @@
 
 #include <algorithm>
 
-//takes a slot in the arena for an order. freed slots are handed out again first, so a book that is
-//busy but roughly the same size over time stops growing the arena and stops allocating altogether
+//takes a slot in the arena for an order, reusing a freed one first
 std::size_t OrderBook::acquire_slot(const Order& order) {
     if (!free_slots_.empty()) {
         std::size_t slot = free_slots_.back();
@@ -22,12 +21,12 @@ std::size_t OrderBook::acquire_slot(const Order& order) {
     return arena_.size() - 1;
 }
 
-//hands a slot back. the order is left where it is rather than cleared, since acquire_slot overwrites it
+//hands a slot back so it can be reused
 void OrderBook::release_slot(std::size_t slot) {
     free_slots_.push_back(slot);
 }
 
-//joins the back of the queue at a price level, which is what gives orders arrival order priority
+//adds an order to the back of the queue at its price level
 void OrderBook::link_into_level(PriceLevel& level, std::size_t slot) {
     arena_[slot].previous = level.tail;
     arena_[slot].next = no_order;
@@ -42,8 +41,7 @@ void OrderBook::link_into_level(PriceLevel& level, std::size_t slot) {
     level.total_quantity += arena_[slot].order.remaining_quantity;
 }
 
-//takes an order out of its level's queue. matching only ever removes the head, but a cancel can come
-//for an order anywhere in it, so both ends and the middle have to be handled
+//takes an order out of its level's queue, wherever it is in it
 void OrderBook::unlink_from_level(PriceLevel& level, std::size_t slot) {
     std::size_t previous = arena_[slot].previous;
     std::size_t next = arena_[slot].next;
@@ -98,10 +96,7 @@ std::size_t OrderBook::resting_order_count() const {
     return arena_.size() - free_slots_.size();
 }
 
-//growing the arena and the free list to full size and straight back down writes to every page of them now,
-//while nothing is waiting on it. only reserving them would leave the operating system to hand each page over
-//the first time it is used, which happens in the middle of a submit. the sizes are only ever grown here, so a
-//book that already has orders in it keeps all of them
+//sizes the arena, free list and index up front, writing to every page now
 void OrderBook::reserve(std::size_t orders) {
     if (orders > arena_.size()) {
         std::size_t in_use = arena_.size();
@@ -152,7 +147,7 @@ std::optional<double> OrderBook::mid_price() const {
             static_cast<double>(ask.value())) / 2.0;
 }
 
-//the level keeps its own running total, so this no longer has to walk the queue
+//each level keeps a running total, so this is a single lookup
 Quantity OrderBook::quantity_at_price(Side side, Price price) const {
     if (side == Side::Buy) {
         auto it = bids_.find(price);
@@ -169,7 +164,7 @@ Quantity OrderBook::quantity_at_price(Side side, Price price) const {
     return it->second.total_quantity;
 }
 
-//walks the bid book from the best price down and reports the quantity resting at each level
+//reports the quantity at each bid level from the best price down
 std::vector<OrderBook::PriceLevelSnapshot> OrderBook::bid_depth(std::size_t levels) const {
     std::vector<PriceLevelSnapshot> snapshots;
 
@@ -185,7 +180,7 @@ std::vector<OrderBook::PriceLevelSnapshot> OrderBook::bid_depth(std::size_t leve
     return snapshots;
 }
 
-//walks the ask book from the best price up and reports the quantity resting at each level
+//reports the quantity at each ask level from the best price up
 std::vector<OrderBook::PriceLevelSnapshot> OrderBook::ask_depth(std::size_t levels) const {
     std::vector<PriceLevelSnapshot> snapshots;
 
@@ -219,8 +214,7 @@ std::vector<Trade> OrderBook::match_buy(Order& incoming) {
         std::size_t resting_slot = best_ask_level.head;
         Order& resting_order = arena_[resting_slot].order;
 
-        //a trader is not allowed to trade with themselves, so their resting order is taken out of the
-        //way and the incoming order carries on to whatever was queued behind it
+        //a trader cannot trade with themselves, so their resting order is pulled instead
         if (resting_order.trader_id == incoming.trader_id) {
             self_trade_cancellations_++;
             remove_resting_order(Side::Sell, best_ask_price, resting_slot);
@@ -280,8 +274,7 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
         std::size_t resting_slot = best_bid_level.head;
         Order& resting_order = arena_[resting_slot].order;
 
-        //a trader is not allowed to trade with themselves, so their resting order is taken out of the
-        //way and the incoming order carries on to whatever was queued behind it
+        //a trader cannot trade with themselves, so their resting order is pulled instead
         if (resting_order.trader_id == incoming.trader_id) {
             self_trade_cancellations_++;
             remove_resting_order(Side::Buy, best_bid_price, resting_slot);
@@ -324,9 +317,7 @@ std::vector<Trade> OrderBook::match_sell(Order& incoming) {
     return trades;
 }
 
-//counts up what the book could give an incoming order right now. it walks the individual orders rather
-//than using the totals each level keeps, because quantity belonging to the incoming trader has to be
-//left out: it would be pulled instead of traded, so counting it would promise a fill that cannot happen
+//how much of an incoming order the book could fill now, skipping the same trader's orders
 Quantity OrderBook::fillable_quantity(const Order& incoming) const {
     Quantity needed = incoming.remaining_quantity;
     Quantity available = 0;
@@ -379,11 +370,9 @@ Quantity OrderBook::fillable_quantity(const Order& incoming) const {
 }
 
 //submits an order to the order book and returns a vector of trades that occurred as a result of the submission.
-//whether anything is left resting afterwards depends on the order: a market order has no price to wait at,
-//and an immediate or cancel order is not willing to wait, so in both cases the remainder is discarded
+//only a good till cancelled limit order rests what is left, anything else discards it
 std::vector<Trade> OrderBook::submit(Order order) {
-    //a fill or kill order must not trade at all unless all of it can, so the book is asked what it could
-    //fill before anything has been changed
+    //a fill or kill order that cannot be filled in full does not trade at all
     if (order.time_in_force == TimeInForce::FillOrKill &&
         fillable_quantity(order) < order.remaining_quantity) {
         return {};
@@ -420,7 +409,7 @@ std::optional<std::vector<Trade>> OrderBook::modify_order(
     OrderLocation location = *found;
     Order existing = arena_[location.slot].order;
 
-    //dropping quantity at the same price is applied in place, so the order keeps its turn in the queue
+    //a smaller quantity at the same price is changed in place, keeping the order's place
     if (new_price == existing.price &&
         new_quantity > 0 &&
         new_quantity < existing.remaining_quantity) {
@@ -434,7 +423,7 @@ std::optional<std::vector<Trade>> OrderBook::modify_order(
         return std::vector<Trade>{};
     }
 
-    //anything else gives up its place, so the order leaves and comes back as though it were new
+    //anything else cancels the order and submits it again
     cancel_order(order_id);
 
     //modifying down to nothing is just a cancel
@@ -476,8 +465,7 @@ bool OrderBook::cancel_order(OrderId order_id) {
     if (location.side == Side::Buy) {
         auto level_it = bids_.find(location.price);
 
-        //the index should never point at a price the book has forgotten, but not checking would mean
-        //walking off the end of the map if it ever did
+        //the index should never point at a missing level, but check rather than walk off the map
         if (level_it == bids_.end()) {
             order_index_.erase(order_id);
             return false;

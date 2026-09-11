@@ -156,10 +156,7 @@ int main() {
     runner.check(market_order_book.best_bid().has_value() && market_order_book.best_bid().value() == 105,
                  "and rests instead of crossing");
 
-    //test 8: the order id index is a hand written hash table, so it is checked against a std::map asked
-    //to do exactly the same work. the ids are drawn from a range far smaller than the number of steps so
-    //that the same id is inserted, erased and reinserted constantly, which is what shakes out mistakes in
-    //the removal path
+    //test 8: check the order id index against a std::map doing the same inserts and erases
     OrderIndex<std::size_t> index;
     std::map<OrderId, std::size_t> reference;
     std::mt19937_64 rng(12345);
@@ -208,7 +205,7 @@ int main() {
 
     runner.check(every_entry_found, "and every surviving entry is still reachable with the right value");
 
-    //ids that were never inserted must not be found, however full the table is
+    //ids that were never inserted must not be found
     bool absent_stay_absent = true;
     for (OrderId id = 100000; id < 100100; ++id) {
         if (index.find(id) != nullptr) {
@@ -219,7 +216,7 @@ int main() {
     runner.check(absent_stay_absent, "an id that was never inserted is not found");
     runner.check(!index.erase(999999), "and erasing one that is not there reports that there was nothing");
 
-    //emptying the table completely should leave nothing behind that a lookup can trip over
+    //empty the table completely
     for (const auto& entry : reference) {
         index.erase(entry.first);
     }
@@ -235,7 +232,7 @@ int main() {
 
     runner.check(empty_finds_nothing, "and nothing can be found in it afterwards");
 
-    //test 9: immediate or cancel takes what it can and does not wait around for the rest
+    //test 9: immediate or cancel takes what it can and drops the rest
     OrderBook ioc_book;
     ioc_book.submit(Order{30, 300, Side::Sell, OrderType::Limit, 110, 5, 10});
 
@@ -300,8 +297,7 @@ int main() {
                  "and what the incoming order could not fill rests as a bid");
     runner.check(stp_book.quantity_at_price(Side::Buy, 115) == 3, "for the quantity left over");
 
-    //a fill or kill order must not count its own resting quantity as something it could trade against,
-    //or it would be accepted and then find there was nothing to fill it after all
+    //a fill or kill order cannot count its own resting quantity
     OrderBook stp_fok_book;
     stp_fok_book.submit(Order{53, 700, Side::Sell, OrderType::Limit, 110, 5, 10});
 
@@ -334,7 +330,7 @@ int main() {
     runner.check(after_reduce.size() == 1 && after_reduce[0].resting_order_id == 60,
                  "and the reduced order keeps its place at the front of the queue");
 
-    //raising the quantity is a different matter, because the extra was never queued
+    //raising the quantity sends the order to the back of the queue
     OrderBook priority_book;
     priority_book.submit(Order{70, 810, Side::Buy, OrderType::Limit, 100, 10, 10});
     priority_book.submit(Order{71, 811, Side::Buy, OrderType::Limit, 100, 10, 20});
@@ -345,7 +341,7 @@ int main() {
     runner.check(after_raise.size() == 1 && after_raise[0].resting_order_id == 71,
                  "raising the quantity sends the order to the back, so the one behind trades first");
 
-    //a new price also gives up the order's place, and moves it to the level it now belongs on
+    //a new price moves the order to its new level
     OrderBook reprice_book;
     reprice_book.submit(Order{80, 820, Side::Buy, OrderType::Limit, 100, 10, 10});
     reprice_book.modify_order(80, 105, 10);
@@ -354,7 +350,7 @@ int main() {
                  "a repriced order shows up at its new price");
     runner.check(reprice_book.quantity_at_price(Side::Buy, 100) == 0, "and not at the old one");
 
-    //and if the new price crosses, the modify trades on the way back in
+    //a new price that crosses trades straight away
     OrderBook crossing_book;
     crossing_book.submit(Order{90, 830, Side::Sell, OrderType::Limit, 110, 5, 10});
     crossing_book.submit(Order{91, 831, Side::Buy, OrderType::Limit, 100, 5, 20});
@@ -400,7 +396,7 @@ int main() {
 
     runner.check(sized_all_found, "and every entry in it can still be found");
 
-    //sizing a table that already has entries in it has to keep all of them
+    //sizing a table that already has entries must keep them
     OrderIndex<std::size_t> resized_index;
     for (OrderId id = 1; id <= 100; ++id) {
         resized_index.insert(id, static_cast<std::size_t>(id) * 7);
@@ -430,7 +426,7 @@ int main() {
     runner.check(sized_book.cancel_order(5000) && !sized_book.cancel_order(5000),
                  "and cancelling in it behaves as it always does");
 
-    //sizing a book that already has orders resting in it has to leave them exactly as they were
+    //sizing a book that already has orders must keep them
     OrderBook resized_book;
     resized_book.submit(Order{7000, 910, Side::Buy, OrderType::Limit, 100, 5, 1});
     resized_book.submit(Order{7001, 911, Side::Sell, OrderType::Limit, 105, 3, 2});

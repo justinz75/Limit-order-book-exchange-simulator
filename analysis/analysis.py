@@ -15,10 +15,10 @@ print(df.describe(), flush=True)
 df.info()
 print(df.isna().sum(), flush=True)
 
-#the market data columns are only filled in on order rows, so the trades are dropped before plotting
+#keep only the order rows, since trades have no market data
 book = df[df["event_type"] == "NEW_ORDER"]
 
-#the raw series jump about too much to read over this many events, so the slower moving ones are averaged
+#rolling average window for the noisier series
 smoothing_window = 500
 
 #plot spread

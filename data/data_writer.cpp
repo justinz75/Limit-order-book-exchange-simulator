@@ -1,6 +1,6 @@
 #include "data_writer.hpp"
 
-//how many price levels on each side the depth columns are totalled over
+//how many levels on each side the depth columns add up
 constexpr std::size_t depth_levels = 5;
 
 DataWriter::DataWriter(const std::string& filename)
@@ -70,7 +70,7 @@ void DataWriter::write_event(
 
     file_ << ",";
 
-    //a market order carries no price of its own, so the column is left empty for it
+    //market orders have no price, so the column is left empty
     if (order.type == OrderType::Limit) {
         file_ << order.price;
     }
@@ -107,7 +107,7 @@ void DataWriter::write_event(
 
     file_ << ",";
 
-    //total quantity resting in the price levels nearest the top of each side of the book
+    //total quantity in the top levels on each side of the book
     Quantity bid_quantity = 0;
     for (const auto& level : order_book.bid_depth(depth_levels)) {
         bid_quantity += level.quantity;
@@ -137,7 +137,7 @@ void DataWriter::write_trade(
     file_ << "TRADE" << ",";
 
     file_ << trade.incoming_order_id << ",";
-    //a trade has both a buyer and a seller, and no order type of its own
+    //a trade has no side or order type of its own
     file_ << ",,";
     file_ << trade.price << ",";
     file_ << trade.quantity << ",";
