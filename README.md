@@ -6,10 +6,25 @@ A matching engine for a single instrument, written in C++17, together with a sim
 random order flow through it and writes every event to CSV so the resulting market can be looked at in
 pandas.
 
-The engine handles limit and market orders under price-time priority, partial fills, cancels, and level
-two depth queries. The simulator is what makes it interesting to look at: it generates a reference price
-that wanders, places orders around it, and cancels a good share of them, which is enough to produce a
-book that behaves roughly like a real one.
+The engine handles limit and market orders under price-time priority, with partial fills, cancels,
+modifies, immediate or cancel and fill or kill orders, self trade prevention, and level two depth queries.
+The simulator is what makes it interesting to look at: it generates a reference price that wanders, places
+orders around it, and cancels a good share of them, which is enough to produce a book that behaves roughly
+like a real one.
+
+## Highlights
+
+- **3.51 million submits a second** on one thread, and 7.90 million cancels, on a Ryzen 7 7435HS.
+  See [Performance](#performance).
+- **p99.9 submit latency down from 4,448 ns to 1,232 ns** by sizing the book up front and writing to every
+  page before the run starts. See [Sizing the book up front](#sizing-the-book-up-front).
+- **The full 100,000 event run down from 0.89 s to 0.48 s** by replacing `std::unordered_map` with an open
+  addressing hash table written for the job. See [How it got there](#how-it-got-there).
+- **A market maker that hands back 78% of the spread it earns** to adverse selection even with nobody
+  informed in the market, and whose typical position falls from 113 to 4.9 once it leans its quotes on
+  position. See [The market maker](#the-market-maker).
+- **Tested on three compilers**: unit tests for matching, time in force, modify and self trade prevention,
+  run by CI on GCC, Clang and MSVC.
 
 ## Building
 
